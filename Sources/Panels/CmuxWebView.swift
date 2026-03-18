@@ -53,6 +53,9 @@ final class CmuxWebView: WKWebView {
     private static var contextMenuFallbackKey: UInt8 = 0
 
     var onContextMenuDownloadStateChanged: ((Bool) -> Void)?
+    /// Called when "Open Link in New Tab" context menu is selected.
+    /// Bypasses createWebViewWith so the link opens as a tab, not a popup.
+    var onContextMenuOpenLinkInNewTab: ((URL) -> Void)?
     var contextMenuLinkURLProvider: ((CmuxWebView, NSPoint, @escaping (URL?) -> Void) -> Void)?
     var contextMenuDefaultBrowserOpener: ((URL) -> Bool)?
     /// Guard against background panes stealing first responder (e.g. page autofocus).
@@ -114,6 +117,18 @@ final class CmuxWebView: WKWebView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+#if DEBUG
+        let typingTimingStart = CmuxTypingTiming.start()
+        var handled = false
+        defer {
+            CmuxTypingTiming.logDuration(
+                path: "browser.web.performKeyEquivalent",
+                startedAt: typingTimingStart,
+                event: event,
+                extra: "handled=\(handled ? 1 : 0)"
+            )
+        }
+#endif
         if event.keyCode == 36 || event.keyCode == 76 {
             // Always bypass app/menu key-equivalent routing for Return/Enter so WebKit
             // receives the keyDown path used by form submission handlers.
@@ -124,28 +139,65 @@ final class CmuxWebView: WKWebView {
         // Menu/app shortcut routing is only needed for Command equivalents
         // (New Tab, Close Tab, tab switching, split commands, etc).
         guard flags.contains(.command) else {
-            return super.performKeyEquivalent(with: event)
+            let result = super.performKeyEquivalent(with: event)
+#if DEBUG
+            handled = result
+#endif
+            return result
+        }
+
+        if !shouldRouteCommandEquivalentDirectlyToMainMenu(event) {
+            let result = super.performKeyEquivalent(with: event)
+#if DEBUG
+            handled = result
+#endif
+            return result
         }
 
         // Let the app menu handle key equivalents first (New Tab, Close Tab, tab switching, etc).
         if let menu = NSApp.mainMenu, menu.performKeyEquivalent(with: event) {
+#if DEBUG
+            handled = true
+#endif
             return true
         }
 
         // Handle app-level shortcuts that are not menu-backed (for example split commands).
         // Without this, WebKit can consume Cmd-based shortcuts before the app monitor sees them.
         if AppDelegate.shared?.handleBrowserSurfaceKeyEquivalent(event) == true {
+#if DEBUG
+            handled = true
+#endif
             return true
         }
 
-        return super.performKeyEquivalent(with: event)
+        let result = super.performKeyEquivalent(with: event)
+#if DEBUG
+        handled = result
+#endif
+        return result
     }
 
     override func keyDown(with event: NSEvent) {
+#if DEBUG
+        let typingTimingStart = CmuxTypingTiming.start()
+        var route = "super"
+        defer {
+            CmuxTypingTiming.logDuration(
+                path: "browser.web.keyDown",
+                startedAt: typingTimingStart,
+                event: event,
+                extra: "route=\(route)"
+            )
+        }
+#endif
         // Some Cmd-based key paths in WebKit don't consistently invoke performKeyEquivalent.
         // Route them through the same app-level shortcut handler as a fallback.
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
            AppDelegate.shared?.handleBrowserSurfaceKeyEquivalent(event) == true {
+#if DEBUG
+            route = "appShortcut"
+#endif
             return
         }
 
@@ -1163,12 +1215,15 @@ final class CmuxWebView: WKWebView {
                 openLinkInsertionIndex = index + 1
             }
 
-            // Rename "Open Link in New Window" to "Open Link in New Tab".
-            // The UIDelegate's createWebViewWith already handles the action
-            // by opening the link as a new surface in the same pane.
+            // Retarget "Open Link in New Window" to open as a tab, not a popup.
+            // Without this, WebKit's default action calls createWebViewWith with
+            // navigationType .other, which our classifier would treat as a scripted
+            // popup request.
             if item.identifier?.rawValue == "WKMenuItemIdentifierOpenLinkInNewWindow"
                 || item.title.contains("Open Link in New Window") {
                 item.title = String(localized: "browser.contextMenu.openLinkInNewTab", defaultValue: "Open Link in New Tab")
+                item.target = self
+                item.action = #selector(contextMenuOpenLinkInNewTab(_:))
             }
 
             if isDownloadImageMenuItem(item) {
@@ -1223,6 +1278,14 @@ final class CmuxWebView: WKWebView {
         resolveContextMenuLinkURL(at: point) { [weak self] url in
             guard let self, let url, self.canOpenInDefaultBrowser(url) else { return }
             self.openContextMenuLinkInDefaultBrowser(url)
+        }
+    }
+
+    @objc private func contextMenuOpenLinkInNewTab(_ sender: Any?) {
+        let point = lastContextMenuPoint
+        resolveContextMenuLinkURL(at: point) { [weak self] url in
+            guard let self, let url else { return }
+            self.onContextMenuOpenLinkInNewTab?(url)
         }
     }
 

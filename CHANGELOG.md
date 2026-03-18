@@ -2,7 +2,46 @@
 
 All notable changes to cmux are documented here.
 
-## [0.62.0] - 2026-03-07
+## [0.62.2] - 2026-03-14
+
+### Added
+- Configurable sidebar tint color with separate light/dark mode support via Settings and config file (`sidebar-background`, `sidebar-tint-opacity`) ([#1465](https://github.com/manaflow-ai/cmux/pull/1465))
+- Cmd+P all-surfaces search option ([#1382](https://github.com/manaflow-ai/cmux/pull/1382))
+- `cmux themes` command with bundled Ghostty themes ([#1334](https://github.com/manaflow-ai/cmux/pull/1334), [#1314](https://github.com/manaflow-ai/cmux/pull/1314))
+- Sidebar can now shrink to smaller widths ([#1420](https://github.com/manaflow-ai/cmux/pull/1420))
+- Menu bar visibility setting ([#1330](https://github.com/manaflow-ai/cmux/pull/1330))
+
+### Changed
+- CLI Sentry events are now tagged with the app release ([#1408](https://github.com/manaflow-ai/cmux/pull/1408))
+- Stable socket listener now falls back to a user-scoped path, and repeated startup failures are throttled ([#1351](https://github.com/manaflow-ai/cmux/pull/1351), [#1415](https://github.com/manaflow-ai/cmux/pull/1415))
+
+### Fixed
+- Command palette command-mode shortcut, navigation, and omnibar backspace or arrow-key regressions ([#1417](https://github.com/manaflow-ai/cmux/pull/1417), [#1413](https://github.com/manaflow-ai/cmux/pull/1413))
+- Stale Claude sidebar status from missing hooks, OSC suppression, and PID cleanup ([#1306](https://github.com/manaflow-ai/cmux/pull/1306))
+- Split cwd inheritance when the shell cwd is stale ([#1403](https://github.com/manaflow-ai/cmux/pull/1403))
+- Crashes when creating a new workspace and when inserting a workspace into an orphaned window context ([#1391](https://github.com/manaflow-ai/cmux/pull/1391), [#1380](https://github.com/manaflow-ai/cmux/pull/1380))
+- Cmd+W close behavior and close-confirmation shell-state regressions ([#1395](https://github.com/manaflow-ai/cmux/pull/1395), [#1386](https://github.com/manaflow-ai/cmux/pull/1386))
+- macOS dictation NSTextInputClient conformance and terminal image-paste fallbacks ([#1410](https://github.com/manaflow-ai/cmux/pull/1410), [#1305](https://github.com/manaflow-ai/cmux/pull/1305), [#1361](https://github.com/manaflow-ai/cmux/pull/1361), [#1358](https://github.com/manaflow-ai/cmux/pull/1358))
+- VS Code command palette target resolution, Ghostty Pure prompt redraws, and internal drag regressions ([#1389](https://github.com/manaflow-ai/cmux/pull/1389), [#1363](https://github.com/manaflow-ai/cmux/pull/1363), [#1316](https://github.com/manaflow-ai/cmux/pull/1316), [#1379](https://github.com/manaflow-ai/cmux/pull/1379))
+
+## [0.62.1] - 2026-03-13
+
+### Added
+- Cmd+T (New tab) shortcut on the welcome screen ([#1258](https://github.com/manaflow-ai/cmux/pull/1258))
+
+### Fixed
+- Cmd+backtick window cycling skipping windows
+- Titlebar shortcut hint clipping ([#1259](https://github.com/manaflow-ai/cmux/pull/1259))
+- Terminal portals desyncing after sidebar changes ([#1253](https://github.com/manaflow-ai/cmux/pull/1253))
+- Background terminal focus retries reordering windows
+- Pure-style multiline prompt redraws in Ghostty
+- Return key not working on Cmd+Ctrl+W close confirmation ([#1279](https://github.com/manaflow-ai/cmux/pull/1279))
+- Concurrent remote daemon RPC calls timing out ([#1281](https://github.com/manaflow-ai/cmux/pull/1281))
+
+### Removed
+- SSH remote port proxying (reverted, will return in a future release)
+
+## [0.62.0] - 2026-03-12
 
 ### Added
 - Markdown viewer panel with live file watching ([#883](https://github.com/manaflow-ai/cmux/pull/883))
@@ -30,6 +69,12 @@ All notable changes to cmux are documented here.
 - External URL bypass rules for the embedded browser ([#768](https://github.com/manaflow-ai/cmux/pull/768))
 - Telemetry opt-out setting ([#610](https://github.com/manaflow-ai/cmux/pull/610))
 - Browser automation docs page ([#622](https://github.com/manaflow-ai/cmux/pull/622))
+- Vim mode indicator badge on terminal panes ([#1092](https://github.com/manaflow-ai/cmux/pull/1092))
+- Sidebar workspace color in CLI sidebar_state output ([#1101](https://github.com/manaflow-ai/cmux/pull/1101))
+- Prompt before closing window with Cmd+Ctrl+W ([#1219](https://github.com/manaflow-ai/cmux/pull/1219))
+- Jump to Latest button in notifications popover ([#1167](https://github.com/manaflow-ai/cmux/pull/1167))
+- Khmer localization ([#1198](https://github.com/manaflow-ai/cmux/pull/1198))
+- cmux claude-teams launcher ([#1179](https://github.com/manaflow-ai/cmux/pull/1179))
 
 ### Changed
 - Command palette search is now async and decoupled from typing for reduced lag
@@ -41,6 +86,9 @@ All notable changes to cmux are documented here.
 - Feedback recipient changed to `feedback@manaflow.com` ([#1007](https://github.com/manaflow-ai/cmux/pull/1007))
 - Regenerated app icons from Icon Composer ([#1005](https://github.com/manaflow-ai/cmux/pull/1005))
 - Moved update logs into the Debug menu ([#1008](https://github.com/manaflow-ai/cmux/pull/1008))
+- Updated Ghostty to v1.3.0 ([#1142](https://github.com/manaflow-ai/cmux/pull/1142))
+- Welcome screen colors adapted for light mode ([#1214](https://github.com/manaflow-ai/cmux/pull/1214))
+- Notification sound picker width constrained ([#1168](https://github.com/manaflow-ai/cmux/pull/1168))
 
 ### Fixed
 - Frozen blank launch from session restore race condition ([#399](https://github.com/manaflow-ai/cmux/issues/399), [#565](https://github.com/manaflow-ai/cmux/pull/565))
@@ -75,14 +123,37 @@ All notable changes to cmux are documented here.
 - Voice dictation text insertion ([#857](https://github.com/manaflow-ai/cmux/pull/857))
 - Browser panel lifecycle after WebContent process termination ([#892](https://github.com/manaflow-ai/cmux/pull/892))
 - Typing lag reduction by hiding invisible views from the accessibility tree ([#862](https://github.com/manaflow-ai/cmux/pull/862))
+- CJK font fallback preventing decorative font rendering for CJK characters ([#1017](https://github.com/manaflow-ai/cmux/pull/1017))
+- Inline VS Code serve-web token exposure via argv ([#1033](https://github.com/manaflow-ai/cmux/pull/1033))
+- Browser pane portal anchor sizing ([#1094](https://github.com/manaflow-ai/cmux/pull/1094))
+- Pinned workspace notification reordering ([#1116](https://github.com/manaflow-ai/cmux/pull/1116))
+- cmux --version memory blowup ([#1121](https://github.com/manaflow-ai/cmux/pull/1121))
+- Notification ring dismissal on direct terminal clicks ([#1126](https://github.com/manaflow-ai/cmux/pull/1126))
+- Browser portal visibility when terminal tab is active ([#1130](https://github.com/manaflow-ai/cmux/pull/1130))
+- Browser panes reloading when switching workspaces ([#1136](https://github.com/manaflow-ai/cmux/pull/1136))
+- Sidebar PR badge detection ([#1139](https://github.com/manaflow-ai/cmux/pull/1139))
+- Browser address bar disappearing during pane zoom ([#1145](https://github.com/manaflow-ai/cmux/pull/1145))
+- Ghost terminal surface focus after split close ([#1148](https://github.com/manaflow-ai/cmux/pull/1148))
+- Browser DevTools resize loop and layout stability ([#1170](https://github.com/manaflow-ai/cmux/pull/1170), [#1173](https://github.com/manaflow-ai/cmux/pull/1173), [#1189](https://github.com/manaflow-ai/cmux/pull/1189))
+- Typing lag from sidebar re-evaluation and hitTest overhead ([#1204](https://github.com/manaflow-ai/cmux/issues/1204))
+- Browser pane stale content after drag splits ([#1215](https://github.com/manaflow-ai/cmux/pull/1215))
+- Terminal drop overlay misplacement during drag hover ([#1213](https://github.com/manaflow-ai/cmux/pull/1213))
+- Hidden browser slot inspector focus crash ([#1211](https://github.com/manaflow-ai/cmux/pull/1211))
+- Browser devtools hide fallback ([#1220](https://github.com/manaflow-ai/cmux/pull/1220))
+- Browser portal refresh on geometry churn ([#1224](https://github.com/manaflow-ai/cmux/pull/1224))
+- Browser tab switch triggering unnecessary reload ([#1228](https://github.com/manaflow-ai/cmux/pull/1228))
+- Devtools side dock guard for attached devtools ([#1230](https://github.com/manaflow-ai/cmux/pull/1230))
 
-### Thanks to 21 contributors!
+### Thanks to 24 contributors!
+- [@0xble](https://github.com/0xble)
 - [@afxjzs](https://github.com/afxjzs)
 - [@AI-per](https://github.com/AI-per)
 - [@atani](https://github.com/atani)
+- [@atmigtnca](https://github.com/atmigtnca)
 - [@austinywang](https://github.com/austinywang)
 - [@cheulyop](https://github.com/cheulyop)
 - [@ConnorCallison](https://github.com/ConnorCallison)
+- [@gonzaloserrano](https://github.com/gonzaloserrano)
 - [@harukitosa](https://github.com/harukitosa)
 - [@homanp](https://github.com/homanp)
 - [@JLeeChan](https://github.com/JLeeChan)
