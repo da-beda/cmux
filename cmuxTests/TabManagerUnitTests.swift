@@ -521,6 +521,38 @@ final class TabManagerNotificationFocusTests: XCTestCase {
 
 
 @MainActor
+final class TabManagerWorkspaceSelectionSyncTests: XCTestCase {
+    func testSelectingWorkspaceConvergesCoreSelectionStateImmediately() {
+        let manager = TabManager()
+        let firstWorkspace = manager.tabs[0]
+        let secondWorkspace = manager.addWorkspace(select: false)
+
+        guard let secondPanelId = secondWorkspace.focusedPanelId else {
+            XCTFail("Expected focused panel in second workspace")
+            return
+        }
+
+        XCTAssertTrue(secondWorkspace.updatePanelTitle(panelId: secondPanelId, title: "second-runtime-title"))
+        secondWorkspace.updatePanelDirectory(panelId: secondPanelId, directory: "/tmp/cmux-selected-workspace")
+
+        manager.selectWorkspace(firstWorkspace)
+        manager.selectWorkspace(secondWorkspace)
+
+        XCTAssertEqual(manager.selectedTabId, secondWorkspace.id)
+        XCTAssertEqual(manager.selectedWorkspace?.id, secondWorkspace.id)
+        XCTAssertEqual(manager.selectedTerminalPanel?.id, secondPanelId)
+        XCTAssertEqual(
+            secondWorkspace.processTitle,
+            "second-runtime-title",
+            "Expected focused workspace process title to be current without draining the main queue"
+        )
+        XCTAssertEqual(secondWorkspace.title, "second-runtime-title")
+        XCTAssertEqual(secondWorkspace.currentDirectory, "/tmp/cmux-selected-workspace")
+    }
+}
+
+
+@MainActor
 final class TabManagerPendingUnfocusPolicyTests: XCTestCase {
     func testDoesNotUnfocusWhenPendingTabIsCurrentlySelected() {
         let tabId = UUID()

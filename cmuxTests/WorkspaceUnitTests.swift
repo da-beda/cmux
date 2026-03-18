@@ -840,6 +840,82 @@ final class WorkspaceSplitWorkingDirectoryTests: XCTestCase {
 
 
 @MainActor
+final class WorkspaceFocusedPanelDerivedStateTests: XCTestCase {
+    func testFocusedRuntimeTitleDrivesWorkspaceTitleAcrossSplitFocusChanges() {
+        let workspace = Workspace()
+        guard let leftPanelId = workspace.focusedPanelId,
+              let rightPanel = workspace.newTerminalSplit(from: leftPanelId, orientation: .horizontal) else {
+            XCTFail("Expected split terminal panels")
+            return
+        }
+
+        let initialWorkspaceTitle = workspace.title
+
+        XCTAssertTrue(workspace.updatePanelTitle(panelId: leftPanelId, title: "left-runtime-title"))
+        XCTAssertEqual(
+            workspace.title,
+            initialWorkspaceTitle,
+            "Expected a non-focused panel title change to leave the workspace title alone"
+        )
+
+        XCTAssertTrue(workspace.updatePanelTitle(panelId: rightPanel.id, title: "right-runtime-title"))
+        XCTAssertEqual(workspace.processTitle, "right-runtime-title")
+        XCTAssertEqual(workspace.title, "right-runtime-title")
+
+        workspace.focusPanel(leftPanelId)
+
+        XCTAssertEqual(workspace.processTitle, "left-runtime-title")
+        XCTAssertEqual(workspace.title, "left-runtime-title")
+
+        workspace.setCustomTitle("Workspace Custom")
+        workspace.focusPanel(rightPanel.id)
+
+        XCTAssertEqual(
+            workspace.processTitle,
+            "right-runtime-title",
+            "Expected focused runtime title to keep tracking the focused panel under a custom workspace title"
+        )
+        XCTAssertEqual(
+            workspace.title,
+            "Workspace Custom",
+            "Expected a custom workspace title to remain the display title"
+        )
+    }
+
+    func testClosingFocusedPanelRecomputesTitleAndDirectoryFromRemainingFocusedPanel() {
+        let workspace = Workspace()
+        guard let leftPanelId = workspace.focusedPanelId,
+              let rightPanel = workspace.newTerminalSplit(from: leftPanelId, orientation: .horizontal) else {
+            XCTFail("Expected split terminal panels")
+            return
+        }
+
+        XCTAssertTrue(workspace.updatePanelTitle(panelId: leftPanelId, title: "left-runtime-title"))
+        workspace.updatePanelDirectory(panelId: leftPanelId, directory: "/tmp/cmux-left-panel")
+
+        XCTAssertTrue(workspace.updatePanelTitle(panelId: rightPanel.id, title: "right-runtime-title"))
+        workspace.updatePanelDirectory(panelId: rightPanel.id, directory: "/tmp/cmux-right-panel")
+
+        XCTAssertEqual(workspace.focusedPanelId, rightPanel.id)
+        XCTAssertEqual(workspace.processTitle, "right-runtime-title")
+        XCTAssertEqual(workspace.title, "right-runtime-title")
+        XCTAssertEqual(workspace.currentDirectory, "/tmp/cmux-right-panel")
+
+        XCTAssertTrue(workspace.closePanel(rightPanel.id, force: true))
+
+        XCTAssertEqual(workspace.focusedPanelId, leftPanelId)
+        XCTAssertEqual(workspace.processTitle, "left-runtime-title")
+        XCTAssertEqual(workspace.title, "left-runtime-title")
+        XCTAssertEqual(
+            workspace.currentDirectory,
+            "/tmp/cmux-left-panel",
+            "Expected closing the focused panel to re-sync workspace cwd from the surviving focused panel"
+        )
+    }
+}
+
+
+@MainActor
 final class WorkspaceTerminalFocusRecoveryTests: XCTestCase {
     private func makeWindow() -> NSWindow {
         NSWindow(

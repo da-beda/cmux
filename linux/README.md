@@ -19,9 +19,12 @@ cargo build --release # Release build
   - `model/` — TabManager, Workspace, Panel, LayoutNode
   - `ui/` — Window, Sidebar, SplitView, TerminalPanel
   - `socket/` — Unix socket server, v2 JSON protocol, auth
-  - `session/` — Session persistence (XDG, JSON compatible with macOS cmux)
   - `notifications.rs` — Notification store + desktop notifications
 - `cmux-cli/` — CLI client (`cmux workspace list`, `cmux surface send-text`, etc.)
+
+The Linux MVP is terminal-only. Browser-panel placeholders are intentionally absent.
+The Linux app and CLI are local-only: they do not include remote telemetry, analytics,
+or crash-reporting SDKs. The `report_*` socket commands update local workspace metadata only.
 
 ## Architecture Review
 
@@ -41,6 +44,16 @@ To build with ghostty:
 
 Unix socket at `$XDG_RUNTIME_DIR/cmux.sock` (falls back to `/tmp/cmux-$UID.sock`).
 Line-delimited JSON v2 protocol. Compatible with macOS cmux socket API.
+
+## Local Verification
+
+To verify the Linux port stays free of remote telemetry behavior, run:
+
+```bash
+../scripts/linux-no-remote-telemetry.sh
+```
+
+That script checks both the Linux dependency graph and a syscall-traced local app session.
 
 ## Reference
 

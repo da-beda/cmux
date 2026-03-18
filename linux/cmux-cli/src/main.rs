@@ -65,6 +65,9 @@ enum Commands {
 
     /// List available API methods
     Capabilities,
+
+    /// Focus the app window
+    WindowFocus,
 }
 
 #[derive(Subcommand)]
@@ -83,7 +86,44 @@ enum WorkspaceCommands {
     /// Select a workspace by index (0-based)
     Select {
         /// Workspace index
-        index: usize,
+        #[arg(conflicts_with = "workspace")]
+        index: Option<usize>,
+        /// Workspace UUID
+        #[arg(long, conflicts_with = "index")]
+        workspace: Option<String>,
+    },
+    /// Rename the selected or targeted workspace
+    Rename {
+        /// Workspace UUID
+        #[arg(long)]
+        workspace: Option<String>,
+        /// New title (empty clears custom title)
+        #[arg(long)]
+        title: String,
+    },
+    /// Move a workspace to a new visible index
+    Reorder {
+        /// Workspace UUID
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Source index
+        #[arg(long)]
+        from_index: Option<usize>,
+        /// Target index
+        #[arg(long)]
+        to_index: usize,
+    },
+    /// Pin the selected or targeted workspace
+    Pin {
+        /// Workspace UUID
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Unpin the selected or targeted workspace
+    Unpin {
+        /// Workspace UUID
+        #[arg(long)]
+        workspace: Option<String>,
     },
     /// Select the next workspace
     Next {
@@ -121,6 +161,158 @@ enum WorkspaceCommands {
         #[arg(long)]
         color: Option<String>,
     },
+    /// Report git branch metadata for a workspace surface
+    ReportGitBranch {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long)]
+        branch: String,
+        #[arg(long, default_value_t = false)]
+        dirty: bool,
+    },
+    /// Clear git branch metadata
+    ClearGitBranch {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+    },
+    /// Report current working directory
+    ReportPwd {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long)]
+        path: String,
+    },
+    /// Report shell activity state
+    ReportShellState {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long)]
+        state: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Report listening ports
+    ReportPorts {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long = "port", required = true)]
+        ports: Vec<u16>,
+    },
+    /// Clear listening ports
+    ClearPorts {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+    },
+    /// Report TTY name
+    ReportTty {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long)]
+        tty_name: String,
+    },
+    /// Report pull request metadata
+    ReportPr {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long)]
+        number: u32,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long, default_value = "PR")]
+        label: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, default_value = "open")]
+        state: String,
+        #[arg(long)]
+        branch: Option<String>,
+        #[arg(long)]
+        checks: Option<String>,
+    },
+    /// Report review metadata
+    ReportReview {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long)]
+        number: Option<u32>,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long, default_value = "MR")]
+        label: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, default_value = "open")]
+        state: String,
+        #[arg(long)]
+        checks: Option<String>,
+    },
+    /// Clear PR or review metadata
+    ClearPr {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+    },
+    /// Report a compact generic metadata item
+    ReportMeta {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        value: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        icon: Option<String>,
+        #[arg(long)]
+        color: Option<String>,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long)]
+        priority: Option<i32>,
+        #[arg(long)]
+        format: Option<String>,
+    },
+    /// Report a freeform generic metadata block
+    ReportMetaBlock {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        content: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        style: Option<String>,
+        #[arg(long)]
+        priority: Option<i32>,
+        #[arg(long)]
+        format: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -133,6 +325,16 @@ enum SurfaceCommands {
         #[arg(long)]
         surface: Option<String>,
     },
+    /// Focus a surface
+    Focus {
+        #[arg(long)]
+        surface: String,
+    },
+    /// Close a surface
+    Close {
+        #[arg(long)]
+        surface: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -143,6 +345,41 @@ enum PaneCommands {
         #[arg(long, default_value = "horizontal")]
         orientation: String,
     },
+    /// Focus a pane
+    Focus {
+        #[arg(long)]
+        pane: String,
+    },
+}
+
+fn json_object() -> serde_json::Map<String, Value> {
+    serde_json::Map::new()
+}
+
+fn insert_optional_string(
+    params: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: &Option<String>,
+) {
+    if let Some(value) = value {
+        params.insert(key.to_string(), Value::String(value.clone()));
+    }
+}
+
+fn insert_optional_usize(
+    params: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: Option<usize>,
+) {
+    if let Some(value) = value {
+        params.insert(key.to_string(), serde_json::json!(value));
+    }
+}
+
+fn insert_optional_i32(params: &mut serde_json::Map<String, Value>, key: &str, value: Option<i32>) {
+    if let Some(value) = value {
+        params.insert(key.to_string(), serde_json::json!(value));
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -151,18 +388,48 @@ fn main() -> anyhow::Result<()> {
     let (method, params) = match &cli.command {
         Commands::Ping => ("system.ping", serde_json::json!({})),
         Commands::Capabilities => ("system.capabilities", serde_json::json!({})),
+        Commands::WindowFocus => ("window.focus", serde_json::json!({})),
 
         Commands::Workspace(ws) => match ws {
             WorkspaceCommands::List => ("workspace.list", serde_json::json!({})),
-            WorkspaceCommands::New { directory, title } => (
-                "workspace.new",
-                serde_json::json!({
-                    "directory": directory,
-                    "title": title,
-                }),
-            ),
-            WorkspaceCommands::Select { index } => {
-                ("workspace.select", serde_json::json!({"index": index}))
+            WorkspaceCommands::New { directory, title } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "directory", directory);
+                insert_optional_string(&mut params, "title", title);
+                ("workspace.new", Value::Object(params))
+            }
+            WorkspaceCommands::Select { index, workspace } => {
+                let mut params = json_object();
+                insert_optional_usize(&mut params, "index", *index);
+                insert_optional_string(&mut params, "workspace", workspace);
+                ("workspace.select", Value::Object(params))
+            }
+            WorkspaceCommands::Rename { workspace, title } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                params.insert("title".to_string(), Value::String(title.clone()));
+                ("workspace.rename", Value::Object(params))
+            }
+            WorkspaceCommands::Reorder {
+                workspace,
+                from_index,
+                to_index,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_usize(&mut params, "from_index", *from_index);
+                params.insert("to_index".to_string(), serde_json::json!(to_index));
+                ("workspace.reorder", Value::Object(params))
+            }
+            WorkspaceCommands::Pin { workspace } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                ("workspace.pin", Value::Object(params))
+            }
+            WorkspaceCommands::Unpin { workspace } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                ("workspace.unpin", Value::Object(params))
             }
             WorkspaceCommands::Next { wrap } => {
                 ("workspace.next", serde_json::json!({"wrap": wrap}))
@@ -173,11 +440,9 @@ fn main() -> anyhow::Result<()> {
             WorkspaceCommands::Last => ("workspace.last", serde_json::json!({})),
             WorkspaceCommands::LatestUnread => ("workspace.latest_unread", serde_json::json!({})),
             WorkspaceCommands::Close { index } => {
-                let mut params = serde_json::json!({});
-                if let Some(idx) = index {
-                    params["index"] = serde_json::json!(idx);
-                }
-                ("workspace.close", params)
+                let mut params = json_object();
+                insert_optional_usize(&mut params, "index", *index);
+                ("workspace.close", Value::Object(params))
             }
             WorkspaceCommands::SetStatus {
                 key,
@@ -193,26 +458,205 @@ fn main() -> anyhow::Result<()> {
                     "color": color,
                 }),
             ),
+            WorkspaceCommands::ReportGitBranch {
+                workspace,
+                surface,
+                branch,
+                dirty,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                params.insert("branch".to_string(), Value::String(branch.clone()));
+                params.insert("is_dirty".to_string(), Value::Bool(*dirty));
+                ("workspace.report_git_branch", Value::Object(params))
+            }
+            WorkspaceCommands::ClearGitBranch { workspace, surface } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                ("workspace.clear_git_branch", Value::Object(params))
+            }
+            WorkspaceCommands::ReportPwd {
+                workspace,
+                surface,
+                path,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                params.insert("path".to_string(), Value::String(path.clone()));
+                ("workspace.report_pwd", Value::Object(params))
+            }
+            WorkspaceCommands::ReportShellState {
+                workspace,
+                surface,
+                state,
+                label,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                params.insert("state".to_string(), Value::String(state.clone()));
+                insert_optional_string(&mut params, "label", label);
+                ("workspace.report_shell_state", Value::Object(params))
+            }
+            WorkspaceCommands::ReportPorts {
+                workspace,
+                surface,
+                ports,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                params.insert("ports".to_string(), serde_json::json!(ports));
+                ("workspace.report_ports", Value::Object(params))
+            }
+            WorkspaceCommands::ClearPorts { workspace, surface } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                ("workspace.clear_ports", Value::Object(params))
+            }
+            WorkspaceCommands::ReportTty {
+                workspace,
+                surface,
+                tty_name,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                params.insert("tty_name".to_string(), Value::String(tty_name.clone()));
+                ("workspace.report_tty", Value::Object(params))
+            }
+            WorkspaceCommands::ReportPr {
+                workspace,
+                surface,
+                number,
+                url,
+                label,
+                title,
+                state,
+                branch,
+                checks,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                params.insert("number".to_string(), serde_json::json!(number));
+                insert_optional_string(&mut params, "url", url);
+                params.insert("label".to_string(), Value::String(label.clone()));
+                insert_optional_string(&mut params, "title", title);
+                params.insert("state".to_string(), Value::String(state.clone()));
+                insert_optional_string(&mut params, "branch", branch);
+                insert_optional_string(&mut params, "checks", checks);
+                ("workspace.report_pr", Value::Object(params))
+            }
+            WorkspaceCommands::ReportReview {
+                workspace,
+                surface,
+                number,
+                url,
+                label,
+                title,
+                state,
+                checks,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                if let Some(number) = number {
+                    params.insert("number".to_string(), serde_json::json!(number));
+                }
+                insert_optional_string(&mut params, "url", url);
+                params.insert("label".to_string(), Value::String(label.clone()));
+                insert_optional_string(&mut params, "title", title);
+                params.insert("state".to_string(), Value::String(state.clone()));
+                insert_optional_string(&mut params, "checks", checks);
+                ("workspace.report_review", Value::Object(params))
+            }
+            WorkspaceCommands::ClearPr { workspace, surface } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                ("workspace.clear_pr", Value::Object(params))
+            }
+            WorkspaceCommands::ReportMeta {
+                workspace,
+                surface,
+                key,
+                value,
+                label,
+                icon,
+                color,
+                url,
+                priority,
+                format,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                params.insert("key".to_string(), Value::String(key.clone()));
+                params.insert("value".to_string(), Value::String(value.clone()));
+                insert_optional_string(&mut params, "label", label);
+                insert_optional_string(&mut params, "icon", icon);
+                insert_optional_string(&mut params, "color", color);
+                insert_optional_string(&mut params, "url", url);
+                insert_optional_i32(&mut params, "priority", *priority);
+                insert_optional_string(&mut params, "format", format);
+                ("workspace.report_meta", Value::Object(params))
+            }
+            WorkspaceCommands::ReportMetaBlock {
+                workspace,
+                surface,
+                key,
+                content,
+                title,
+                style,
+                priority,
+                format,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                params.insert("key".to_string(), Value::String(key.clone()));
+                params.insert("content".to_string(), Value::String(content.clone()));
+                insert_optional_string(&mut params, "title", title);
+                insert_optional_string(&mut params, "style", style);
+                insert_optional_i32(&mut params, "priority", *priority);
+                insert_optional_string(&mut params, "format", format);
+                ("workspace.report_meta_block", Value::Object(params))
+            }
         },
 
         Commands::Surface(surf) => match surf {
             SurfaceCommands::SendText { text, surface } => {
                 // Unescape \n sequences
                 let unescaped = text.replace("\\n", "\n");
-                (
-                    "surface.send_input",
-                    serde_json::json!({
-                        "input": unescaped,
-                        "surface": surface,
-                    }),
-                )
+                let mut params = json_object();
+                params.insert("input".to_string(), Value::String(unescaped));
+                insert_optional_string(&mut params, "surface", surface);
+                ("surface.send_input", Value::Object(params))
             }
+            SurfaceCommands::Focus { surface } => (
+                "surface.focus",
+                serde_json::json!({
+                    "surface": surface,
+                }),
+            ),
+            SurfaceCommands::Close { surface } => (
+                "surface.close",
+                serde_json::json!({
+                    "surface": surface,
+                }),
+            ),
         },
 
         Commands::Pane(pane) => match pane {
             PaneCommands::New { orientation } => {
                 ("pane.new", serde_json::json!({"orientation": orientation}))
             }
+            PaneCommands::Focus { pane } => ("pane.focus", serde_json::json!({"pane": pane})),
         },
 
         Commands::Notify {
@@ -221,16 +665,15 @@ fn main() -> anyhow::Result<()> {
             workspace,
             surface,
             no_desktop,
-        } => (
-            "notification.create",
-            serde_json::json!({
-                "title": title,
-                "body": body,
-                "workspace": workspace,
-                "surface": surface,
-                "send_desktop": !no_desktop,
-            }),
-        ),
+        } => {
+            let mut params = json_object();
+            params.insert("title".to_string(), Value::String(title.clone()));
+            params.insert("body".to_string(), Value::String(body.clone()));
+            insert_optional_string(&mut params, "workspace", workspace);
+            insert_optional_string(&mut params, "surface", surface);
+            params.insert("send_desktop".to_string(), Value::Bool(!no_desktop));
+            ("notification.create", Value::Object(params))
+        }
     };
 
     let response = send_request(&cli.socket, method, params)?;

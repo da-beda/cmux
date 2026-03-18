@@ -148,6 +148,71 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         XCTAssertEqual(payload["has_ssh_options"] as? Bool, true)
     }
 
+    func testExplicitScopedMetadataReportsRejectMissingPanel() throws {
+        let socketPath = makeSocketPath("report-missing")
+        let tabManager = TabManager()
+        let workspace = try XCTUnwrap(tabManager.selectedWorkspace)
+        let missingPanelId = UUID()
+
+        TerminalController.shared.start(
+            tabManager: tabManager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let responses = try sendCommands([
+            "report_pwd /tmp/cmux-missing --tab \(workspace.id.uuidString) --panel \(missingPanelId.uuidString)"
+        ], to: socketPath)
+
+        XCTAssertEqual(
+            responses,
+            ["ERROR: Panel not found '\(missingPanelId.uuidString)'"]
+        )
+        XCTAssertNil(workspace.panelDirectories[missingPanelId])
+    }
+
+    func testExplicitScopedMetadataReportsCommitBeforeReturningSuccess() throws {
+        let socketPath = makeSocketPath("report-commit")
+        let tabManager = TabManager()
+        let workspace = try XCTUnwrap(tabManager.selectedWorkspace)
+        let panelId = try XCTUnwrap(workspace.focusedPanelId)
+
+        TerminalController.shared.start(
+            tabManager: tabManager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let cwd = "/tmp/cmux-socket-cwd-\(UUID().uuidString)"
+        let branch = "feature/socket-metadata"
+        let responses = try sendCommands([
+            "report_pwd \(cwd) --tab \(workspace.id.uuidString) --panel \(panelId.uuidString)",
+            "report_git_branch \(branch) --status dirty --tab \(workspace.id.uuidString) --panel \(panelId.uuidString)",
+            "report_shell_state prompt --tab \(workspace.id.uuidString) --panel \(panelId.uuidString)",
+            "sidebar_state --tab \(workspace.id.uuidString)"
+        ], to: socketPath)
+
+        XCTAssertEqual(responses[0], "OK")
+        XCTAssertEqual(responses[1], "OK")
+        XCTAssertEqual(responses[2], "OK")
+        XCTAssertTrue(responses[3].contains("cwd=\(cwd)"))
+        XCTAssertTrue(responses[3].contains("focused_cwd=\(cwd)"))
+        XCTAssertTrue(responses[3].contains("git_branch=\(branch) dirty"))
+
+        XCTAssertEqual(workspace.panelDirectories[panelId], cwd)
+        XCTAssertEqual(workspace.currentDirectory, cwd)
+        XCTAssertEqual(workspace.panelGitBranches[panelId]?.branch, branch)
+        XCTAssertEqual(workspace.panelGitBranches[panelId]?.isDirty, true)
+        XCTAssertEqual(workspace.gitBranch?.branch, branch)
+        XCTAssertEqual(workspace.gitBranch?.isDirty, true)
+        XCTAssertFalse(
+            workspace.panelNeedsConfirmClose(panelId: panelId, fallbackNeedsConfirmClose: true),
+            "Expected prompt-idle shell state to be committed before the socket reply returns"
+        )
+    }
+
     private func waitForSocket(at path: String, timeout: TimeInterval = 2.0) throws {
         let expectation = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in

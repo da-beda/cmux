@@ -5586,6 +5586,26 @@ final class Workspace: Identifiable, ObservableObject {
         return resolvedPanelTitle(panelId: panelId, fallback: fallback)
     }
 
+    private func panelRuntimeTitle(panelId: UUID) -> String? {
+        guard let panel = panels[panelId] else { return nil }
+        let fallback = panelTitles[panelId] ?? panel.displayTitle
+        let trimmed = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    func syncFocusedPanelDerivedState() {
+        guard let panelId = focusedPanelId else { return }
+
+        if let title = panelRuntimeTitle(panelId: panelId) {
+            applyProcessTitle(title)
+        }
+        if let dir = panelDirectories[panelId] {
+            currentDirectory = dir
+        }
+        gitBranch = panelGitBranches[panelId]
+        pullRequest = panelPullRequests[panelId]
+    }
+
     func setPanelPinned(panelId: UUID, pinned: Bool) {
         guard panels[panelId] != nil else { return }
         let wasPinned = pinnedPanelIds.contains(panelId)
@@ -5877,14 +5897,12 @@ final class Workspace: Identifiable, ObservableObject {
             )
         }
 
-        // If this is the only panel and no custom title, update workspace title
-        if panels.count == 1, customTitle == nil {
-            if self.title != trimmed {
-                self.title = trimmed
+        if panelId == focusedPanelId {
+            let previousTitle = self.title
+            let previousProcessTitle = processTitle
+            syncFocusedPanelDerivedState()
+            if self.title != previousTitle || processTitle != previousProcessTitle {
                 didMutate = true
-            }
-            if processTitle != trimmed {
-                processTitle = trimmed
             }
         }
 
@@ -8013,11 +8031,7 @@ final class Workspace: Identifiable, ObservableObject {
         if let terminalPanel = targetPanel as? TerminalPanel {
             terminalPanel.hostedView.ensureFocus(for: id, surfaceId: targetPanelId)
         }
-        if let dir = panelDirectories[targetPanelId] {
-            currentDirectory = dir
-        }
-        gitBranch = panelGitBranches[targetPanelId]
-        pullRequest = panelPullRequests[targetPanelId]
+        syncFocusedPanelDerivedState()
     }
 
     /// Reconcile focus/first-responder convergence.
@@ -9018,12 +9032,7 @@ extension Workspace: BonsplitDelegate {
             _ = panel.restoreFocusIntent(activationIntent)
         }
 
-        // Update current directory if this is a terminal
-        if let dir = panelDirectories[panelId] {
-            currentDirectory = dir
-        }
-        gitBranch = panelGitBranches[panelId]
-        pullRequest = panelPullRequests[panelId]
+        syncFocusedPanelDerivedState()
 
         // Post notification
         NotificationCenter.default.post(

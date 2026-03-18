@@ -84,9 +84,9 @@ Each workspace row should show the minimum context needed to make routing decisi
 
 ## Explicit Non-Goals For MVP
 
-The following are valuable, but not required for the MVP:
+The following are explicitly out of scope for the current Linux implementation:
 
-- in-app browser,
+- browser panels or any in-app browser surface,
 - pull request metadata,
 - listening ports,
 - advanced progress visualizations,

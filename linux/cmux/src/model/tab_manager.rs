@@ -23,7 +23,7 @@ impl TabManager {
         }
     }
 
-    /// Create an empty TabManager (for restoring from session).
+    /// Create an empty TabManager for tests and controlled reconstruction paths.
     pub fn empty() -> Self {
         Self {
             workspaces: Vec::new(),
@@ -194,6 +194,40 @@ impl TabManager {
         self.workspaces.iter()
     }
 
+    pub fn cloned_workspaces(&self) -> Vec<Workspace> {
+        self.workspaces.clone()
+    }
+
+    pub fn from_workspaces(
+        workspaces: Vec<Workspace>,
+        selected_workspace_id: Option<Uuid>,
+    ) -> Self {
+        let mut manager = Self {
+            workspaces,
+            selected_index: None,
+        };
+
+        manager.selected_index = if let Some(selected_workspace_id) = selected_workspace_id {
+            manager
+                .workspaces
+                .iter()
+                .position(|workspace| workspace.id == selected_workspace_id)
+        } else if manager.workspaces.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+
+        if manager.workspaces.is_empty() {
+            manager.workspaces.push(Workspace::new());
+            manager.selected_index = Some(0);
+        } else if manager.selected_index.is_none() {
+            manager.selected_index = Some(0);
+        }
+
+        manager
+    }
+
     /// Select the workspace with the newest unread notification.
     pub fn select_latest_unread(&mut self) -> Option<Uuid> {
         let index = self.latest_unread_index()?;
@@ -220,6 +254,11 @@ impl TabManager {
         if from >= self.workspaces.len() || to >= self.workspaces.len() || from == to {
             return from == to && from < self.workspaces.len();
         }
+        let from_pinned = self.workspaces[from].is_pinned;
+        let to_pinned = self.workspaces[to].is_pinned;
+        if from_pinned != to_pinned {
+            return false;
+        }
         let previous_selection = self.selected_index;
         let ws = self.workspaces.remove(from);
         self.workspaces.insert(to, ws);
@@ -239,6 +278,47 @@ impl TabManager {
         true
     }
 
+    pub fn rename_workspace(&mut self, id: Uuid, title: Option<&str>) -> bool {
+        self.workspace_mut(id)
+            .is_some_and(|workspace| workspace.rename(title))
+    }
+
+    pub fn set_workspace_pinned(&mut self, id: Uuid, pinned: bool) -> Option<usize> {
+        let index = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == id)?;
+        if self.workspaces[index].is_pinned == pinned {
+            return Some(index);
+        }
+
+        self.workspaces[index].is_pinned = pinned;
+        let workspace = self.workspaces.remove(index);
+
+        let pinned_count = self
+            .workspaces
+            .iter()
+            .take_while(|workspace| workspace.is_pinned)
+            .count();
+
+        let target_index = if pinned { pinned_count } else { pinned_count };
+        self.workspaces.insert(target_index, workspace);
+
+        if let Some(selected) = self.selected_index {
+            self.selected_index = Some(if selected == index {
+                target_index
+            } else if index < target_index && selected > index && selected <= target_index {
+                selected - 1
+            } else if index > target_index && selected >= target_index && selected < index {
+                selected + 1
+            } else {
+                selected
+            });
+        }
+
+        Some(target_index)
+    }
+
     /// Find the workspace containing a panel with the given UUID.
     pub fn find_workspace_with_panel(&self, panel_id: Uuid) -> Option<&Workspace> {
         self.workspaces
@@ -251,6 +331,18 @@ impl TabManager {
         self.workspaces
             .iter_mut()
             .find(|w| w.panels.contains_key(&panel_id))
+    }
+
+    pub fn find_workspace_with_pane(&self, pane_id: Uuid) -> Option<&Workspace> {
+        self.workspaces
+            .iter()
+            .find(|workspace| workspace.pane_ids().contains(&pane_id))
+    }
+
+    pub fn find_workspace_with_pane_mut(&mut self, pane_id: Uuid) -> Option<&mut Workspace> {
+        self.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.pane_ids().contains(&pane_id))
     }
 }
 

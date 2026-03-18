@@ -2412,7 +2412,7 @@ struct ContentView: View {
             reconcileMountedWorkspaceIds()
         })
 
-        view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .ghosttyDidSetTitle)) { notification in
+        view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .workspaceDisplayTitleDidChange)) { notification in
             guard let tabId = notification.userInfo?[GhosttyNotificationKey.tabId] as? UUID,
                   tabId == tabManager.selectedTabId else { return }
             scheduleTitlebarTextRefresh()

@@ -5111,7 +5111,7 @@ class TerminalController {
                 let paneId = mapped?.paneId
                 let treeVisible = mapped?.bonsplitTabId != nil && paneId != nil
                 let ttyName = workspace?.surfaceTTYNames[panelId]
-                let currentDirectory = nonEmpty(workspace?.panelDirectories[panelId] ?? mapped?.terminalPanel.directory)
+                let currentDirectory = nonEmpty(workspace?.panelDirectories[panelId])
                 let teardownRequest = terminalSurface.debugTeardownRequest()
                 let lastKnownWorkspaceId = terminalSurface.debugLastKnownWorkspaceId()
 
@@ -13982,7 +13982,7 @@ class TerminalController {
         options: [String: String]
     ) -> (tabId: UUID?, error: String?) {
         var tabId: UUID?
-        DispatchQueue.main.sync {
+        v2MainSync {
             if let tab = resolveTabForReport(reportArgs) {
                 tabId = tab.id
             }
@@ -14048,32 +14048,36 @@ class TerminalController {
             return "ERROR: Tab not found"
         }
 
-        if let scope = Self.explicitSocketScope(options: options) {
-            DispatchQueue.main.async { [weak self] in
-                guard let self,
-                      let tab = self.tabForSidebarMutation(id: scope.workspaceId) else {
-                    return
-                }
-                let validSurfaceIds = Set(tab.panels.keys)
-                tab.pruneSurfaceMetadata(validSurfaceIds: validSurfaceIds)
-                guard validSurfaceIds.contains(scope.panelId) else { return }
-                mutation(tab, scope.panelId)
-            }
-            return "OK"
-        }
+        return v2MainSync {
+            let tab: Tab?
+            let surfaceId: UUID?
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self,
-                  let tab = self.resolveTabForReport(args) else {
-                return
+            if let scope = Self.explicitSocketScope(options: options) {
+                tab = self.tabForSidebarMutation(id: scope.workspaceId)
+                surfaceId = scope.panelId
+            } else {
+                tab = self.resolveTabForReport(args)
+                surfaceId = surfaceIdFromOptions ?? tab?.focusedPanelId
             }
+
+            guard let tab else {
+                return options["tab"] != nil ? "ERROR: Tab not found" : "ERROR: No tab selected"
+            }
+
             let validSurfaceIds = Set(tab.panels.keys)
             tab.pruneSurfaceMetadata(validSurfaceIds: validSurfaceIds)
-            guard let surfaceId = surfaceIdFromOptions ?? tab.focusedPanelId else { return }
-            guard validSurfaceIds.contains(surfaceId) else { return }
+
+            guard let surfaceId else {
+                return "ERROR: Missing panel id — usage: \(missingPanelUsage)"
+            }
+
+            guard validSurfaceIds.contains(surfaceId) else {
+                return "ERROR: Panel not found '\(surfaceId.uuidString)'"
+            }
+
             mutation(tab, surfaceId)
+            return "OK"
         }
-        return "OK"
     }
 
     private func upsertSidebarMetadata(_ args: String, missingError: String) -> String {
@@ -14512,67 +14516,34 @@ class TerminalController {
         }
         let isDirty = parsed.options["status"]?.lowercased() == "dirty"
 
-        // Shell integration always includes explicit workspace/panel IDs.
-        // Keep this telemetry path off-main so wake/main-thread stalls don't
-        // block socket handlers and starve subsequent branch updates.
-        if let scope = Self.explicitSocketScope(options: parsed.options) {
-            DispatchQueue.main.async {
-                guard let tabManager = AppDelegate.shared?.tabManagerFor(tabId: scope.workspaceId),
-                      let tab = tabManager.tabs.first(where: { $0.id == scope.workspaceId }) else {
-                    return
-                }
-                let validSurfaceIds = Set(tab.panels.keys)
-                tab.pruneSurfaceMetadata(validSurfaceIds: validSurfaceIds)
-                guard validSurfaceIds.contains(scope.panelId) else { return }
-                tabManager.updateSurfaceGitBranch(
-                    tabId: scope.workspaceId,
-                    surfaceId: scope.panelId,
-                    branch: branch,
-                    isDirty: isDirty
-                )
-            }
-            return "OK"
+        return schedulePanelMetadataMutation(
+            args: args,
+            options: parsed.options,
+            missingPanelUsage: "report_git_branch <branch> [--status=dirty] [--tab=X] [--panel=Y]"
+        ) { [weak self] tab, surfaceId in
+            guard let self else { return }
+            let owner = AppDelegate.shared?.tabManagerFor(tabId: tab.id) ?? self.tabManager
+            owner?.updateSurfaceGitBranch(
+                tabId: tab.id,
+                surfaceId: surfaceId,
+                branch: branch,
+                isDirty: isDirty
+            )
         }
-
-        var result = "OK"
-        DispatchQueue.main.sync {
-            guard let tab = resolveTabForReport(args) else {
-                result = parsed.options["tab"] != nil ? "ERROR: Tab not found" : "ERROR: No tab selected"
-                return
-            }
-            tab.gitBranch = SidebarGitBranchState(branch: branch, isDirty: isDirty)
-        }
-        return result
     }
 
     private func clearGitBranch(_ args: String) -> String {
         let parsed = parseOptions(args)
 
-        // Shell integration always includes explicit workspace/panel IDs.
-        // Keep this telemetry path off-main so wake/main-thread stalls don't
-        // block socket handlers and starve subsequent branch updates.
-        if let scope = Self.explicitSocketScope(options: parsed.options) {
-            DispatchQueue.main.async {
-                guard let tabManager = AppDelegate.shared?.tabManagerFor(tabId: scope.workspaceId),
-                      let tab = tabManager.tabs.first(where: { $0.id == scope.workspaceId }) else {
-                    return
-                }
-                let validSurfaceIds = Set(tab.panels.keys)
-                tab.pruneSurfaceMetadata(validSurfaceIds: validSurfaceIds)
-                guard validSurfaceIds.contains(scope.panelId) else { return }
-                tabManager.clearSurfaceGitBranch(tabId: scope.workspaceId, surfaceId: scope.panelId)
-            }
-            return "OK"
+        return schedulePanelMetadataMutation(
+            args: args,
+            options: parsed.options,
+            missingPanelUsage: "clear_git_branch [--tab=X] [--panel=Y]"
+        ) { [weak self] tab, surfaceId in
+            guard let self else { return }
+            let owner = AppDelegate.shared?.tabManagerFor(tabId: tab.id) ?? self.tabManager
+            owner?.clearSurfaceGitBranch(tabId: tab.id, surfaceId: surfaceId)
         }
-        var result = "OK"
-        DispatchQueue.main.sync {
-            guard let tab = resolveTabForReport(args) else {
-                result = "ERROR: Tab not found"
-                return
-            }
-            tab.gitBranch = nil
-        }
-        return result
     }
 
     private func reportPullRequest(_ args: String) -> String {
@@ -14617,7 +14588,7 @@ class TerminalController {
         let label = String(labelRaw.prefix(16))
 
         // Shell integration provides explicit workspace/panel UUIDs for browser metadata.
-        // Keep this telemetry path off-main so SwiftUI render passes can't deadlock the socket handler.
+        // Keep this metadata mutation path narrow so UI refresh stays reactive and predictable.
         return schedulePanelMetadataMutation(
             args: args,
             options: parsed.options,
@@ -14720,57 +14691,15 @@ class TerminalController {
         }
 
         let directory = parsed.positional.joined(separator: " ")
-        if let scope = Self.explicitSocketScope(options: parsed.options) {
-            DispatchQueue.main.async {
-                guard let tabManager = AppDelegate.shared?.tabManagerFor(tabId: scope.workspaceId),
-                      let tab = tabManager.tabs.first(where: { $0.id == scope.workspaceId }) else {
-                    return
-                }
-                let validSurfaceIds = Set(tab.panels.keys)
-                tab.pruneSurfaceMetadata(validSurfaceIds: validSurfaceIds)
-                guard validSurfaceIds.contains(scope.panelId) else { return }
-                tabManager.updateSurfaceDirectory(tabId: scope.workspaceId, surfaceId: scope.panelId, directory: directory)
-            }
-            return "OK"
+        return schedulePanelMetadataMutation(
+            args: args,
+            options: parsed.options,
+            missingPanelUsage: "report_pwd <path> [--tab=X] [--panel=Y]"
+        ) { [weak self] tab, surfaceId in
+            guard let self else { return }
+            let owner = AppDelegate.shared?.tabManagerFor(tabId: tab.id) ?? self.tabManager
+            owner?.updateSurfaceDirectory(tabId: tab.id, surfaceId: surfaceId, directory: directory)
         }
-        var result = "OK"
-        DispatchQueue.main.sync {
-            guard let tab = resolveTabForReport(args) else {
-                result = parsed.options["tab"] != nil ? "ERROR: Tab not found" : "ERROR: No tab selected"
-                return
-            }
-
-            let validSurfaceIds = Set(tab.panels.keys)
-            tab.pruneSurfaceMetadata(validSurfaceIds: validSurfaceIds)
-
-            let panelArg = parsed.options["panel"] ?? parsed.options["surface"]
-            let surfaceId: UUID
-            if let panelArg {
-                if panelArg.isEmpty {
-                    result = "ERROR: Missing panel id — usage: report_pwd <path> [--tab=X] [--panel=Y]"
-                    return
-                }
-                guard let parsedId = UUID(uuidString: panelArg) else {
-                    result = "ERROR: Invalid panel id '\(panelArg)'"
-                    return
-                }
-                surfaceId = parsedId
-            } else {
-                guard let focused = tab.focusedPanelId else {
-                    result = "ERROR: Missing panel id (no focused surface)"
-                    return
-                }
-                surfaceId = focused
-            }
-
-            guard validSurfaceIds.contains(surfaceId) else {
-                result = "ERROR: Panel not found '\(surfaceId.uuidString)'"
-                return
-            }
-
-            tabManager.updateSurfaceDirectory(tabId: tab.id, surfaceId: surfaceId, directory: directory)
-        }
-        return result
     }
 
     private func reportShellState(_ args: String) -> String {
@@ -14790,53 +14719,17 @@ class TerminalController {
             ) else {
                 return "OK"
             }
-            DispatchQueue.main.async {
-                guard let tabManager = AppDelegate.shared?.tabManagerFor(tabId: scope.workspaceId) else { return }
-                tabManager.updateSurfaceShellActivity(tabId: scope.workspaceId, surfaceId: scope.panelId, state: state)
-            }
-            return "OK"
         }
 
         guard let tabManager else { return "ERROR: TabManager not available" }
 
-        var result = "OK"
-        DispatchQueue.main.sync {
-            guard let tab = resolveTabForReport(args) else {
-                result = parsed.options["tab"] != nil ? "ERROR: Tab not found" : "ERROR: No tab selected"
-                return
-            }
-
-            let validSurfaceIds = Set(tab.panels.keys)
-            tab.pruneSurfaceMetadata(validSurfaceIds: validSurfaceIds)
-
-            let panelArg = parsed.options["panel"] ?? parsed.options["surface"]
-            let surfaceId: UUID
-            if let panelArg {
-                if panelArg.isEmpty {
-                    result = "ERROR: Missing panel id — usage: report_shell_state <prompt|running> [--tab=X] [--panel=Y]"
-                    return
-                }
-                guard let parsedId = UUID(uuidString: panelArg) else {
-                    result = "ERROR: Invalid panel id '\(panelArg)'"
-                    return
-                }
-                surfaceId = parsedId
-            } else {
-                guard let focused = tab.focusedPanelId else {
-                    result = "ERROR: Missing panel id (no focused surface)"
-                    return
-                }
-                surfaceId = focused
-            }
-
-            guard validSurfaceIds.contains(surfaceId) else {
-                result = "ERROR: Panel not found '\(surfaceId.uuidString)'"
-                return
-            }
-
+        return schedulePanelMetadataMutation(
+            args: args,
+            options: parsed.options,
+            missingPanelUsage: "report_shell_state <prompt|running> [--tab=X] [--panel=Y]"
+        ) { tab, surfaceId in
             tabManager.updateSurfaceShellActivity(tabId: tab.id, surfaceId: surfaceId, state: state)
         }
-        return result
     }
 
     private func clearPorts(_ args: String) -> String {

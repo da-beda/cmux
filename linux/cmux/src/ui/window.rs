@@ -6,10 +6,11 @@ use gtk4::prelude::*;
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use tokio::sync::mpsc::UnboundedReceiver;
+use uuid::Uuid;
 
 use crate::app::{lock_or_recover, AppState, UiEvent};
-use crate::model::panel::SplitOrientation;
-use crate::model::{PanelType, Workspace};
+use crate::model::panel::{FocusDirection, SplitOrientation};
+use crate::model::Workspace;
 use crate::ui::{sidebar, split_view};
 
 /// Create the main application window.
@@ -47,7 +48,7 @@ pub fn create_window(
     split_view.set_content(Some(&content_page));
 
     bind_sidebar_selection(&list_box, &content_box, state);
-    bind_shared_state_updates(&list_box, &content_box, state, ui_events);
+    bind_shared_state_updates(&window, &list_box, &content_box, state, ui_events);
 
     let header = adw::HeaderBar::new();
 
@@ -73,7 +74,7 @@ pub fn create_window(
         let content_box = content_box.clone();
         split_h_btn.connect_clicked(move |_| {
             if let Some(workspace) = lock_or_recover(&state.shared.tab_manager).selected_mut() {
-                workspace.split(SplitOrientation::Horizontal, PanelType::Terminal);
+                workspace.split(SplitOrientation::Horizontal);
             }
             refresh_ui(&list_box, &content_box, &state);
         });
@@ -88,7 +89,7 @@ pub fn create_window(
         let content_box = content_box.clone();
         split_v_btn.connect_clicked(move |_| {
             if let Some(workspace) = lock_or_recover(&state.shared.tab_manager).selected_mut() {
-                workspace.split(SplitOrientation::Vertical, PanelType::Terminal);
+                workspace.split(SplitOrientation::Vertical);
             }
             refresh_ui(&list_box, &content_box, &state);
         });
@@ -126,7 +127,12 @@ pub fn rebuild_content(content_box: &gtk4::Box, state: &Rc<AppState>) {
     let workspace_data = {
         let tab_manager = lock_or_recover(&state.shared.tab_manager);
         tab_manager.selected().map(|ws| {
-            (ws.id, ws.layout.clone(), ws.panels.clone(), ws.attention_panel_id)
+            (
+                ws.id,
+                ws.layout.clone(),
+                ws.panels.clone(),
+                ws.attention_panel_id,
+            )
         })
     };
 
@@ -167,12 +173,14 @@ fn bind_sidebar_selection(list_box: &gtk4::ListBox, content_box: &gtk4::Box, sta
 }
 
 fn bind_shared_state_updates(
+    window: &adw::ApplicationWindow,
     list_box: &gtk4::ListBox,
     content_box: &gtk4::Box,
     state: &Rc<AppState>,
     mut ui_events: UnboundedReceiver<UiEvent>,
 ) {
     let state = state.clone();
+    let window = window.clone();
     let list_box = list_box.clone();
     let content_box = content_box.clone();
 
@@ -180,6 +188,8 @@ fn bind_shared_state_updates(
         while let Some(event) = ui_events.recv().await {
             let mut pending = Some(event);
             let mut needs_refresh = false;
+            let mut focus_surface: Option<(Uuid, bool)> = None;
+            let mut focus_window = false;
             loop {
                 let event = match pending.take() {
                     Some(event) => event,
@@ -200,14 +210,43 @@ fn bind_shared_state_updates(
                             );
                         }
                     }
+                    UiEvent::FocusSurface {
+                        panel_id,
+                        present_window,
+                    } => {
+                        needs_refresh = true;
+                        focus_surface = Some((panel_id, present_window));
+                        focus_window |= present_window;
+                    }
+                    UiEvent::FocusWindow => {
+                        focus_window = true;
+                    }
+                    UiEvent::CloseSurface { panel_id } => {
+                        let _ = state.request_close_panel(panel_id);
+                    }
                 }
             }
 
             if needs_refresh {
                 refresh_ui(&list_box, &content_box, &state);
             }
+            if focus_window {
+                window.present();
+            }
+            if let Some((panel_id, present_window)) = focus_surface {
+                if present_window {
+                    window.present();
+                }
+                focus_surface_widget(&state, panel_id);
+            }
         }
     });
+}
+
+fn focus_surface_widget(state: &Rc<AppState>, panel_id: Uuid) {
+    if let Some(surface) = state.terminal_cache.borrow().get(&panel_id).cloned() {
+        let _ = surface.grab_focus();
+    }
 }
 
 fn select_workspace_by_index(state: &Rc<AppState>, index: usize) -> bool {
@@ -226,6 +265,7 @@ fn select_workspace_by_index(state: &Rc<AppState>, index: usize) -> bool {
     if let Some(workspace_id) = workspace_id {
         mark_workspace_read(state, workspace_id);
     }
+    state.shared.schedule_persist_session();
 
     true
 }
@@ -241,14 +281,149 @@ fn select_latest_unread(state: &Rc<AppState>) -> bool {
     };
 
     mark_workspace_read(state, workspace_id);
+    state.shared.schedule_persist_session();
     true
+}
+
+fn focus_selected_surface(state: &Rc<AppState>) {
+    let panel_id = {
+        let tab_manager = lock_or_recover(&state.shared.tab_manager);
+        tab_manager
+            .selected()
+            .and_then(|workspace| workspace.focused_surface_id())
+    };
+    if let Some(panel_id) = panel_id {
+        focus_surface_widget(state, panel_id);
+    }
+}
+
+fn move_workspace(state: &Rc<AppState>, delta: isize) -> bool {
+    let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+    let Some(selected) = tab_manager.selected_index() else {
+        return false;
+    };
+    let target = if delta.is_negative() {
+        selected.saturating_sub(delta.unsigned_abs())
+    } else {
+        selected.saturating_add(delta as usize)
+    };
+    if target >= tab_manager.len() {
+        return false;
+    }
+    let changed = tab_manager.move_workspace(selected, target);
+    drop(tab_manager);
+    if changed {
+        state.shared.notify_ui_refresh();
+    }
+    changed
+}
+
+fn toggle_selected_workspace_pin(state: &Rc<AppState>) -> bool {
+    let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+    let Some(workspace_id) = tab_manager.selected_id() else {
+        return false;
+    };
+    let next = tab_manager
+        .workspace(workspace_id)
+        .map(|workspace| !workspace.is_pinned)
+        .unwrap_or(false);
+    let changed = tab_manager
+        .set_workspace_pinned(workspace_id, next)
+        .is_some();
+    drop(tab_manager);
+    if changed {
+        state.shared.notify_ui_refresh();
+    }
+    changed
+}
+
+fn rename_selected_workspace(window: &adw::ApplicationWindow, state: &Rc<AppState>) -> bool {
+    let workspace_id = {
+        let tab_manager = lock_or_recover(&state.shared.tab_manager);
+        tab_manager.selected_id()
+    };
+    if let Some(workspace_id) = workspace_id {
+        sidebar::prompt_rename_workspace(window.upcast_ref(), state, workspace_id);
+        true
+    } else {
+        false
+    }
+}
+
+fn focus_direction(
+    state: &Rc<AppState>,
+    direction: FocusDirection,
+    list_box: &gtk4::ListBox,
+    content_box: &gtk4::Box,
+) -> bool {
+    let next_panel_id = {
+        let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+        tab_manager
+            .selected_mut()
+            .and_then(|workspace| workspace.move_focus(direction))
+    };
+    if let Some(panel_id) = next_panel_id {
+        state.shared.schedule_persist_session();
+        refresh_ui(list_box, content_box, state);
+        focus_surface_widget(state, panel_id);
+        true
+    } else {
+        false
+    }
+}
+
+fn cycle_surface(
+    state: &Rc<AppState>,
+    next: bool,
+    list_box: &gtk4::ListBox,
+    content_box: &gtk4::Box,
+) -> bool {
+    let panel_id = {
+        let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+        let Some(workspace) = tab_manager.selected_mut() else {
+            return false;
+        };
+        if next {
+            workspace.focus_next_surface()
+        } else {
+            workspace.focus_previous_surface()
+        }
+    };
+    if let Some(panel_id) = panel_id {
+        state.shared.schedule_persist_session();
+        refresh_ui(list_box, content_box, state);
+        focus_surface_widget(state, panel_id);
+        true
+    } else {
+        false
+    }
+}
+
+fn close_selected_surface(
+    state: &Rc<AppState>,
+    list_box: &gtk4::ListBox,
+    content_box: &gtk4::Box,
+) -> bool {
+    let panel_id = {
+        let tab_manager = lock_or_recover(&state.shared.tab_manager);
+        tab_manager
+            .selected()
+            .and_then(|workspace| workspace.focused_surface_id())
+    };
+    let Some(panel_id) = panel_id else {
+        return false;
+    };
+    let closed = state.request_close_panel(panel_id);
+    if closed {
+        refresh_ui(list_box, content_box, state);
+    }
+    closed
 }
 
 fn mark_workspace_read(state: &Rc<AppState>, workspace_id: uuid::Uuid) {
     lock_or_recover(&state.shared.notifications).mark_workspace_read(workspace_id);
 
-    if let Some(workspace) =
-        lock_or_recover(&state.shared.tab_manager).workspace_mut(workspace_id)
+    if let Some(workspace) = lock_or_recover(&state.shared.tab_manager).workspace_mut(workspace_id)
     {
         workspace.mark_notifications_read();
     }
@@ -263,47 +438,114 @@ fn setup_shortcuts(
     let controller = gtk4::EventControllerKey::new();
 
     let state = state.clone();
+    let window_clone = window.clone();
     let list_box = list_box.clone();
     let content_box = content_box.clone();
 
     controller.connect_key_pressed(move |_controller, keyval, _keycode, modifier| {
         let ctrl = modifier.contains(gdk4::ModifierType::CONTROL_MASK);
         let shift = modifier.contains(gdk4::ModifierType::SHIFT_MASK);
+        let alt = modifier.contains(gdk4::ModifierType::ALT_MASK);
 
-        match (keyval, ctrl, shift) {
-            (gdk4::Key::T, true, true) => {
+        match (keyval, ctrl, shift, alt) {
+            (gdk4::Key::T, true, true, false) => {
                 let workspace = Workspace::new();
                 lock_or_recover(&state.shared.tab_manager).add_workspace(workspace);
                 refresh_ui(&list_box, &content_box, &state);
+                focus_selected_surface(&state);
                 glib::Propagation::Stop
             }
-            (gdk4::Key::W, true, true) => {
-                let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
-                if let Some(index) = tab_manager.selected_index() {
-                    tab_manager.remove(index);
-                }
-                drop(tab_manager);
-                refresh_ui(&list_box, &content_box, &state);
+            (gdk4::Key::W, true, true, false) => {
+                close_selected_surface(&state, &list_box, &content_box);
                 glib::Propagation::Stop
             }
-            (gdk4::Key::D, true, true) => {
+            (gdk4::Key::D, true, true, false) => {
                 if let Some(workspace) = lock_or_recover(&state.shared.tab_manager).selected_mut() {
-                    workspace.split(SplitOrientation::Horizontal, PanelType::Terminal);
+                    workspace.split(SplitOrientation::Horizontal);
                 }
                 refresh_ui(&list_box, &content_box, &state);
+                focus_selected_surface(&state);
                 glib::Propagation::Stop
             }
-            (gdk4::Key::E, true, true) => {
+            (gdk4::Key::E, true, true, false) => {
                 if let Some(workspace) = lock_or_recover(&state.shared.tab_manager).selected_mut() {
-                    workspace.split(SplitOrientation::Vertical, PanelType::Terminal);
+                    workspace.split(SplitOrientation::Vertical);
                 }
                 refresh_ui(&list_box, &content_box, &state);
+                focus_selected_surface(&state);
                 glib::Propagation::Stop
             }
-            (gdk4::Key::U, true, true) => {
+            (gdk4::Key::U, true, true, false) => {
                 if select_latest_unread(&state) {
                     refresh_ui(&list_box, &content_box, &state);
+                    focus_selected_surface(&state);
                 }
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::Page_Down, true, true, false) => {
+                let changed = {
+                    let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+                    tab_manager.select_next(true);
+                    tab_manager.selected_id()
+                };
+                if let Some(workspace_id) = changed {
+                    mark_workspace_read(&state, workspace_id);
+                    refresh_ui(&list_box, &content_box, &state);
+                    focus_selected_surface(&state);
+                }
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::Page_Up, true, true, false) => {
+                let changed = {
+                    let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+                    tab_manager.select_previous(true);
+                    tab_manager.selected_id()
+                };
+                if let Some(workspace_id) = changed {
+                    mark_workspace_read(&state, workspace_id);
+                    refresh_ui(&list_box, &content_box, &state);
+                    focus_selected_surface(&state);
+                }
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::Left, true, false, true) => {
+                let _ = focus_direction(&state, FocusDirection::Left, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::Right, true, false, true) => {
+                let _ = focus_direction(&state, FocusDirection::Right, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::Up, true, false, true) => {
+                let _ = focus_direction(&state, FocusDirection::Up, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::Down, true, false, true) => {
+                let _ = focus_direction(&state, FocusDirection::Down, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::bracketright, true, true, false) => {
+                let _ = cycle_surface(&state, true, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::bracketleft, true, true, false) => {
+                let _ = cycle_surface(&state, false, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::period, true, true, false) => {
+                let _ = move_workspace(&state, 1);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::comma, true, true, false) => {
+                let _ = move_workspace(&state, -1);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::P, true, true, false) => {
+                let _ = toggle_selected_workspace_pin(&state);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::F2, false, false, false) => {
+                let _ = rename_selected_workspace(&window_clone, &state);
                 glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,
@@ -319,6 +561,10 @@ fn install_css() {
         "
         .workspace-row {
             border-radius: 10px;
+        }
+
+        .workspace-row menubutton {
+            opacity: 0.7;
         }
 
         .sidebar-notification {

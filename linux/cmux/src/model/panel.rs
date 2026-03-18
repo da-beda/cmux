@@ -1,87 +1,193 @@
-//! Panel model — represents a terminal or browser panel within a workspace.
+//! Panel model — represents a terminal panel within a workspace.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Panel type discriminator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PanelType {
-    Terminal,
-    Browser,
+/// A stable pane identity within a workspace layout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Pane {
+    pub id: Uuid,
+    pub panel_ids: Vec<Uuid>,
+    pub selected_panel_id: Option<Uuid>,
 }
 
-/// A panel within a workspace pane.
-///
-/// Panels are the leaf nodes of the layout tree. Each panel is either a
-/// terminal (backed by a ghostty surface) or a browser (WebKit2GTK).
+impl Pane {
+    pub fn new(panel_ids: Vec<Uuid>, selected_panel_id: Option<Uuid>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            panel_ids,
+            selected_panel_id,
+        }
+    }
+
+    pub fn single_panel(panel_id: Uuid) -> Self {
+        Self::new(vec![panel_id], Some(panel_id))
+    }
+}
+
+/// A terminal panel within a workspace pane.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Panel {
     pub id: Uuid,
-    pub panel_type: PanelType,
     pub title: Option<String>,
     pub custom_title: Option<String>,
     pub directory: Option<String>,
+    #[serde(default)]
+    pub directory_updated_at: Option<f64>,
     pub is_pinned: bool,
     pub is_manually_unread: bool,
     pub git_branch: Option<GitBranch>,
+    #[serde(default)]
+    pub git_branch_updated_at: Option<f64>,
     pub listening_ports: Vec<u16>,
+    #[serde(default)]
+    pub listening_ports_updated_at: Option<f64>,
     pub tty_name: Option<String>,
+    #[serde(default)]
+    pub tty_name_updated_at: Option<f64>,
+    #[serde(default)]
+    pub shell_state: Option<ShellState>,
+    #[serde(default)]
+    pub shell_state_updated_at: Option<f64>,
+    #[serde(default)]
+    pub pr_metadata: Option<PullRequestMetadata>,
+    #[serde(default)]
+    pub pr_metadata_updated_at: Option<f64>,
+    #[serde(default)]
+    pub metadata_items: Vec<MetadataItem>,
+    #[serde(default)]
+    pub metadata_blocks: Vec<MetadataBlock>,
 }
 
 impl Panel {
     /// Create a new terminal panel.
-    pub fn new_terminal() -> Self {
+    pub fn new() -> Self {
         Self {
             id: Uuid::new_v4(),
-            panel_type: PanelType::Terminal,
             title: None,
             custom_title: None,
             directory: None,
+            directory_updated_at: None,
             is_pinned: false,
             is_manually_unread: false,
             git_branch: None,
+            git_branch_updated_at: None,
             listening_ports: Vec::new(),
+            listening_ports_updated_at: None,
             tty_name: None,
+            tty_name_updated_at: None,
+            shell_state: None,
+            shell_state_updated_at: None,
+            pr_metadata: None,
+            pr_metadata_updated_at: None,
+            metadata_items: Vec::new(),
+            metadata_blocks: Vec::new(),
         }
     }
 
-    /// Create a new browser panel.
-    pub fn new_browser() -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            panel_type: PanelType::Browser,
-            title: None,
-            custom_title: None,
-            directory: None,
-            is_pinned: false,
-            is_manually_unread: false,
-            git_branch: None,
-            listening_ports: Vec::new(),
-            tty_name: None,
-        }
-    }
-
-    /// Display title: custom title if set, otherwise process title, otherwise "Terminal"/"Browser".
+    /// Display title: custom title if set, otherwise process title.
     pub fn display_title(&self) -> &str {
         if let Some(ref t) = self.custom_title {
             return t;
         }
+        self.process_title()
+    }
+
+    /// Process title without any custom-title override.
+    pub fn process_title(&self) -> &str {
         if let Some(ref t) = self.title {
             return t;
         }
-        match self.panel_type {
-            PanelType::Terminal => "Terminal",
-            PanelType::Browser => "Browser",
-        }
+        "Terminal"
     }
 }
 
 /// Git branch info for a panel or workspace.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitBranch {
     pub branch: String,
     pub is_dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellActivityState {
+    Prompt,
+    Running,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellState {
+    pub state: ShellActivityState,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PullRequestState {
+    Open,
+    Merged,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PullRequestChecks {
+    Pass,
+    Fail,
+    Pending,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullRequestMetadata {
+    pub number: Option<u32>,
+    pub url: Option<String>,
+    pub label: String,
+    pub title: Option<String>,
+    pub state: PullRequestState,
+    pub branch: Option<String>,
+    pub checks: Option<PullRequestChecks>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataFormat {
+    Plain,
+    Markdown,
+}
+
+impl Default for MetadataFormat {
+    fn default() -> Self {
+        Self::Plain
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetadataItem {
+    pub key: String,
+    pub label: String,
+    pub value: String,
+    pub icon: Option<String>,
+    pub color: Option<String>,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub priority: i32,
+    #[serde(default)]
+    pub format: MetadataFormat,
+    pub timestamp: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MetadataBlock {
+    pub key: String,
+    pub title: Option<String>,
+    pub content: String,
+    pub style: Option<String>,
+    #[serde(default)]
+    pub priority: i32,
+    #[serde(default)]
+    pub format: MetadataFormat,
+    pub timestamp: f64,
 }
 
 /// Recursive layout tree for workspace pane arrangement.
@@ -93,12 +199,7 @@ pub struct GitBranch {
 #[serde(tag = "type")]
 pub enum LayoutNode {
     #[serde(rename = "pane")]
-    Pane {
-        /// Panel IDs in tab order within this pane.
-        panel_ids: Vec<Uuid>,
-        /// Currently selected panel in this pane.
-        selected_panel_id: Option<Uuid>,
-    },
+    Pane { pane: Pane },
     #[serde(rename = "split")]
     Split {
         orientation: SplitOrientation,
@@ -121,8 +222,7 @@ impl LayoutNode {
     /// Create a simple single-pane layout with one panel.
     pub fn single_pane(panel_id: Uuid) -> Self {
         LayoutNode::Pane {
-            panel_ids: vec![panel_id],
-            selected_panel_id: Some(panel_id),
+            pane: Pane::single_panel(panel_id),
         }
     }
 
@@ -134,8 +234,7 @@ impl LayoutNode {
             divider_position: 0.5,
             first: Box::new(self),
             second: Box::new(LayoutNode::Pane {
-                panel_ids: vec![new_panel_id],
-                selected_panel_id: Some(new_panel_id),
+                pane: Pane::single_panel(new_panel_id),
             }),
         }
     }
@@ -143,7 +242,7 @@ impl LayoutNode {
     /// Collect all panel IDs in this layout tree.
     pub fn all_panel_ids(&self) -> Vec<Uuid> {
         match self {
-            LayoutNode::Pane { panel_ids, .. } => panel_ids.clone(),
+            LayoutNode::Pane { pane } => pane.panel_ids.clone(),
             LayoutNode::Split { first, second, .. } => {
                 let mut ids = first.all_panel_ids();
                 ids.extend(second.all_panel_ids());
@@ -152,11 +251,23 @@ impl LayoutNode {
         }
     }
 
+    /// Collect all pane IDs in layout order.
+    pub fn all_pane_ids(&self) -> Vec<Uuid> {
+        match self {
+            LayoutNode::Pane { pane } => vec![pane.id],
+            LayoutNode::Split { first, second, .. } => {
+                let mut ids = first.all_pane_ids();
+                ids.extend(second.all_pane_ids());
+                ids
+            }
+        }
+    }
+
     /// Find the pane containing the given panel ID and return a mutable reference.
     pub fn find_pane_with_panel(&mut self, panel_id: Uuid) -> Option<&mut LayoutNode> {
         match self {
-            LayoutNode::Pane { panel_ids, .. } => {
-                if panel_ids.contains(&panel_id) {
+            LayoutNode::Pane { pane } => {
+                if pane.panel_ids.contains(&panel_id) {
                     Some(self)
                 } else {
                     None
@@ -168,15 +279,44 @@ impl LayoutNode {
         }
     }
 
+    /// Find a pane by pane ID.
+    pub fn find_pane_mut(&mut self, pane_id: Uuid) -> Option<&mut Pane> {
+        match self {
+            LayoutNode::Pane { pane } => (pane.id == pane_id).then_some(pane),
+            LayoutNode::Split { first, second, .. } => first
+                .find_pane_mut(pane_id)
+                .or_else(|| second.find_pane_mut(pane_id)),
+        }
+    }
+
+    /// Find the pane containing the given panel ID.
+    pub fn find_pane_id_with_panel(&self, panel_id: Uuid) -> Option<Uuid> {
+        match self {
+            LayoutNode::Pane { pane } => pane.panel_ids.contains(&panel_id).then_some(pane.id),
+            LayoutNode::Split { first, second, .. } => first
+                .find_pane_id_with_panel(panel_id)
+                .or_else(|| second.find_pane_id_with_panel(panel_id)),
+        }
+    }
+
+    /// Return the selected panel for a pane.
+    pub fn selected_panel_for_pane(&self, pane_id: Uuid) -> Option<Uuid> {
+        match self {
+            LayoutNode::Pane { pane } => (pane.id == pane_id)
+                .then_some(pane.selected_panel_id)
+                .flatten(),
+            LayoutNode::Split { first, second, .. } => first
+                .selected_panel_for_pane(pane_id)
+                .or_else(|| second.selected_panel_for_pane(pane_id)),
+        }
+    }
+
     /// Select the given panel if it exists in this layout tree.
     pub fn select_panel(&mut self, panel_id: Uuid) -> bool {
         match self {
-            LayoutNode::Pane {
-                panel_ids,
-                selected_panel_id,
-            } => {
-                if panel_ids.contains(&panel_id) {
-                    *selected_panel_id = Some(panel_id);
+            LayoutNode::Pane { pane } => {
+                if pane.panel_ids.contains(&panel_id) {
+                    pane.selected_panel_id = Some(panel_id);
                     true
                 } else {
                     false
@@ -188,18 +328,20 @@ impl LayoutNode {
         }
     }
 
+    /// Select a pane and keep its current selected panel.
+    pub fn select_pane(&mut self, pane_id: Uuid) -> bool {
+        self.find_pane_mut(pane_id).is_some()
+    }
+
     /// Remove a panel from the layout. If a pane becomes empty, the split
     /// is collapsed. Returns true if the panel was found and removed.
     pub fn remove_panel(&mut self, panel_id: Uuid) -> bool {
         match self {
-            LayoutNode::Pane {
-                panel_ids,
-                selected_panel_id,
-            } => {
-                if let Some(pos) = panel_ids.iter().position(|&id| id == panel_id) {
-                    panel_ids.remove(pos);
-                    if *selected_panel_id == Some(panel_id) {
-                        *selected_panel_id = panel_ids.first().copied();
+            LayoutNode::Pane { pane } => {
+                if let Some(pos) = pane.panel_ids.iter().position(|&id| id == panel_id) {
+                    pane.panel_ids.remove(pos);
+                    if pane.selected_panel_id == Some(panel_id) {
+                        pane.selected_panel_id = pane.panel_ids.first().copied();
                     }
                     true
                 } else {
@@ -259,8 +401,73 @@ impl LayoutNode {
     /// Check if this node contains no panels.
     pub fn is_empty(&self) -> bool {
         match self {
-            LayoutNode::Pane { panel_ids, .. } => panel_ids.is_empty(),
+            LayoutNode::Pane { pane } => pane.panel_ids.is_empty(),
             LayoutNode::Split { first, second, .. } => first.is_empty() && second.is_empty(),
+        }
+    }
+
+    /// Path from the root to the pane containing the panel, if any.
+    pub fn path_to_panel(&self, panel_id: Uuid) -> Option<Vec<SplitPathStep>> {
+        match self {
+            LayoutNode::Pane { pane } => {
+                if pane.panel_ids.contains(&panel_id) {
+                    Some(Vec::new())
+                } else {
+                    None
+                }
+            }
+            LayoutNode::Split {
+                orientation,
+                first,
+                second,
+                ..
+            } => {
+                if let Some(mut path) = first.path_to_panel(panel_id) {
+                    path.insert(
+                        0,
+                        SplitPathStep {
+                            orientation: *orientation,
+                            branch: SplitBranch::First,
+                        },
+                    );
+                    Some(path)
+                } else if let Some(mut path) = second.path_to_panel(panel_id) {
+                    path.insert(
+                        0,
+                        SplitPathStep {
+                            orientation: *orientation,
+                            branch: SplitBranch::Second,
+                        },
+                    );
+                    Some(path)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    pub fn pane_on_edge(&self, edge: EdgePreference) -> Option<Uuid> {
+        match self {
+            LayoutNode::Pane { pane } => Some(pane.id),
+            LayoutNode::Split {
+                orientation,
+                first,
+                second,
+                ..
+            } => match (orientation, edge) {
+                (SplitOrientation::Horizontal, EdgePreference::Left)
+                | (SplitOrientation::Vertical, EdgePreference::Top) => first
+                    .pane_on_edge(edge)
+                    .or_else(|| second.pane_on_edge(edge)),
+                (SplitOrientation::Horizontal, EdgePreference::Right)
+                | (SplitOrientation::Vertical, EdgePreference::Bottom) => second
+                    .pane_on_edge(edge)
+                    .or_else(|| first.pane_on_edge(edge)),
+                _ => first
+                    .pane_on_edge(edge)
+                    .or_else(|| second.pane_on_edge(edge)),
+            },
         }
     }
 }
@@ -271,6 +478,34 @@ fn same_panel_set(node: &LayoutNode, expected: &[Uuid]) -> bool {
     actual.sort_unstable();
     expected.sort_unstable();
     actual == expected
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgePreference {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitBranch {
+    First,
+    Second,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplitPathStep {
+    pub orientation: SplitOrientation,
+    pub branch: SplitBranch,
 }
 
 #[cfg(test)]
@@ -369,11 +604,8 @@ mod tests {
 
         let mut selected = None;
         if let LayoutNode::Split { second, .. } = &node {
-            if let LayoutNode::Pane {
-                selected_panel_id, ..
-            } = second.as_ref()
-            {
-                selected = *selected_panel_id;
+            if let LayoutNode::Pane { pane } = second.as_ref() {
+                selected = pane.selected_panel_id;
             }
         }
 

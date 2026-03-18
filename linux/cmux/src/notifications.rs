@@ -70,31 +70,6 @@ impl NotificationStore {
         id
     }
 
-    /// Get all notifications.
-    pub fn all(&self) -> &[Notification] {
-        &self.notifications
-    }
-
-    /// Get unread count.
-    pub fn unread_count(&self) -> usize {
-        self.notifications.iter().filter(|n| !n.is_read).count()
-    }
-
-    /// Get unread count for a specific workspace.
-    pub fn unread_count_for_workspace(&self, workspace_id: Uuid) -> usize {
-        self.notifications
-            .iter()
-            .filter(|n| !n.is_read && n.source_workspace_id == Some(workspace_id))
-            .count()
-    }
-
-    /// Mark a notification as read.
-    pub fn mark_read(&mut self, id: Uuid) {
-        if let Some(n) = self.notifications.iter_mut().find(|n| n.id == id) {
-            n.is_read = true;
-        }
-    }
-
     /// Mark all notifications for a workspace as read.
     pub fn mark_workspace_read(&mut self, workspace_id: Uuid) {
         for notification in &mut self.notifications {
@@ -102,18 +77,6 @@ impl NotificationStore {
                 notification.is_read = true;
             }
         }
-    }
-
-    /// Mark all notifications as read.
-    pub fn mark_all_read(&mut self) {
-        for n in &mut self.notifications {
-            n.is_read = true;
-        }
-    }
-
-    /// Clear all notifications.
-    pub fn clear(&mut self) {
-        self.notifications.clear();
     }
 }
 

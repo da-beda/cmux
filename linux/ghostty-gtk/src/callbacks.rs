@@ -295,7 +295,71 @@ pub struct ClipboardContent {
 
 #[cfg(test)]
 mod tests {
-    use super::{c_string, handler_from_userdata, surface_from_callback_userdata};
+    use super::{
+        c_string, handler_from_userdata, queue_render_from_userdata,
+        surface_from_callback_userdata, SurfaceUserdata,
+    };
+    use std::panic::{self, AssertUnwindSafe};
+    use std::sync::mpsc::{self, Sender};
+    use std::sync::OnceLock;
+    use std::thread;
+
+    type GtkTask = Box<dyn FnOnce() + Send + 'static>;
+
+    fn gtk_test_sender() -> &'static Sender<GtkTask> {
+        static SENDER: OnceLock<Sender<GtkTask>> = OnceLock::new();
+        SENDER.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<GtkTask>();
+            thread::Builder::new()
+                .name("ghostty-gtk-test".into())
+                .spawn(move || {
+                    gtk4::init().expect("GTK should initialize for callback tests");
+                    while let Ok(task) = rx.recv() {
+                        task();
+                        let context = gtk4::glib::MainContext::default();
+                        while context.pending() {
+                            let _ = context.iteration(false);
+                        }
+                    }
+                })
+                .expect("GTK callback test thread should start");
+            tx
+        })
+    }
+
+    fn run_on_gtk_thread<R, F>(f: F) -> R
+    where
+        R: Send + 'static,
+        F: FnOnce() -> R + Send + 'static,
+    {
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        gtk_test_sender()
+            .send(Box::new(move || {
+                let result = panic::catch_unwind(AssertUnwindSafe(f));
+                result_tx
+                    .send(result)
+                    .expect("GTK callback test result should be delivered");
+            }))
+            .expect("GTK callback test task should be scheduled");
+
+        match result_rx
+            .recv()
+            .expect("GTK callback test result should be received")
+        {
+            Ok(result) => result,
+            Err(payload) => panic::resume_unwind(payload),
+        }
+    }
+
+    fn raw_surface_userdata(
+        surface: &crate::surface::GhosttyGlSurface,
+    ) -> *mut std::os::raw::c_void {
+        Box::into_raw(Box::new(SurfaceUserdata::new(surface))) as *mut std::os::raw::c_void
+    }
+
+    unsafe fn drop_surface_userdata(userdata: *mut std::os::raw::c_void) {
+        drop(Box::from_raw(userdata as *mut SurfaceUserdata));
+    }
 
     #[test]
     fn c_string_returns_none_for_null() {
@@ -310,5 +374,39 @@ mod tests {
     #[test]
     fn surface_from_callback_userdata_returns_none_for_null() {
         assert!(unsafe { surface_from_callback_userdata(std::ptr::null_mut()) }.is_none());
+    }
+
+    #[test]
+    fn surface_from_callback_userdata_returns_live_surface() {
+        run_on_gtk_thread(|| {
+            let surface = crate::surface::GhosttyGlSurface::new();
+            let userdata = raw_surface_userdata(&surface);
+
+            let recovered = unsafe { surface_from_callback_userdata(userdata) };
+            assert_eq!(recovered.as_ref(), Some(&surface));
+
+            unsafe {
+                drop_surface_userdata(userdata);
+            }
+        });
+    }
+
+    #[test]
+    fn queue_render_from_userdata_accepts_live_surface_userdata() {
+        run_on_gtk_thread(|| {
+            let surface = crate::surface::GhosttyGlSurface::new();
+            let userdata = raw_surface_userdata(&surface);
+
+            assert!(unsafe { queue_render_from_userdata(userdata) });
+
+            let context = gtk4::glib::MainContext::default();
+            while context.pending() {
+                let _ = context.iteration(false);
+            }
+
+            unsafe {
+                drop_surface_userdata(userdata);
+            }
+        });
     }
 }

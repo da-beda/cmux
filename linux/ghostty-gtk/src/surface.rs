@@ -16,6 +16,7 @@ use std::os::raw::c_char;
 use std::os::raw::c_void;
 use std::ptr;
 use std::rc::Rc;
+use uuid::Uuid;
 
 use crate::callbacks::ClipboardContent;
 use crate::keys;
@@ -36,6 +37,25 @@ fn cstring_input(text: &str, context: &'static str) -> Option<std::ffi::CString>
             None
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SurfaceCellSize {
+    pub width_px: u32,
+    pub height_px: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SurfaceScrollbarState {
+    pub total: u64,
+    pub offset: u64,
+    pub len: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SurfaceCommandFinished {
+    pub exit_code: Option<u8>,
+    pub duration_ns: u64,
 }
 
 // Minimal GL bindings for viewport setup.
@@ -65,7 +85,12 @@ mod imp {
         pub(super) app: Cell<ghostty_app_t>,
         pub(super) callback_userdata: RefCell<Option<Box<crate::callbacks::SurfaceUserdata>>>,
         pub(super) pending_text: RefCell<Vec<String>>,
+        pub(super) panel_id: RefCell<Option<Uuid>>,
         pub(super) title: RefCell<String>,
+        pub(super) pwd: RefCell<Option<String>>,
+        pub(super) cell_size: Cell<Option<SurfaceCellSize>>,
+        pub(super) scrollbar: Cell<Option<SurfaceScrollbarState>>,
+        pub(super) command_finished: Cell<Option<SurfaceCommandFinished>>,
         pub(super) im_context: RefCell<Option<gtk4::IMMulticontext>>,
         pub(super) im_composing: Cell<bool>,
         pub(super) in_keyevent: Cell<ImeKeyEventState>,
@@ -498,7 +523,10 @@ impl GhosttyGlSurface {
             let display = self.display();
             let group = controller
                 .current_event()
-                .and_then(|ev| ev.downcast_ref::<gdk4::KeyEvent>().map(|ke| ke.layout() as i32))
+                .and_then(|ev| {
+                    ev.downcast_ref::<gdk4::KeyEvent>()
+                        .map(|ke| ke.layout() as i32)
+                })
                 .unwrap_or(0);
             if let Some((unshifted_key, _, _, _)) =
                 display.translate_key(keycode, gdk4::ModifierType::empty(), group)
@@ -696,6 +724,7 @@ impl GhosttyGlSurface {
         true
     }
 
+    #[cfg(feature = "link-ghostty")]
     fn flush_pending_text(&self) {
         let surface = self.imp().surface.get();
         if surface.is_null() {
@@ -932,6 +961,70 @@ impl GhosttyGlSurface {
     /// Get the current title.
     pub fn title(&self) -> String {
         self.imp().title.borrow().clone()
+    }
+
+    /// Associate this surface with a cmux panel ID.
+    pub fn set_panel_id(&self, panel_id: Uuid) {
+        *self.imp().panel_id.borrow_mut() = Some(panel_id);
+    }
+
+    /// Get the associated cmux panel ID.
+    pub fn panel_id(&self) -> Option<Uuid> {
+        *self.imp().panel_id.borrow()
+    }
+
+    /// Update the reported working directory for this surface.
+    pub fn set_pwd(&self, pwd: Option<&str>) {
+        *self.imp().pwd.borrow_mut() = pwd.map(ToOwned::to_owned);
+    }
+
+    /// Get the last reported working directory for this surface.
+    pub fn pwd(&self) -> Option<String> {
+        self.imp().pwd.borrow().clone()
+    }
+
+    /// Update the reported terminal cell size in device pixels.
+    pub fn set_cell_size(&self, width_px: u32, height_px: u32) {
+        let next = Some(SurfaceCellSize {
+            width_px,
+            height_px,
+        });
+        if self.imp().cell_size.replace(next) != next {
+            self.queue_resize();
+            self.queue_render();
+        }
+    }
+
+    /// Get the last reported terminal cell size in device pixels.
+    pub fn cell_size(&self) -> Option<SurfaceCellSize> {
+        self.imp().cell_size.get()
+    }
+
+    /// Update the reported scrollbar state for this surface.
+    pub fn set_scrollbar(&self, total: u64, offset: u64, len: u64) {
+        self.imp()
+            .scrollbar
+            .set(Some(SurfaceScrollbarState { total, offset, len }));
+    }
+
+    /// Get the last reported scrollbar state for this surface.
+    pub fn scrollbar(&self) -> Option<SurfaceScrollbarState> {
+        self.imp().scrollbar.get()
+    }
+
+    /// Record metadata for the most recent completed foreground command.
+    pub fn set_command_finished(&self, exit_code: Option<u8>, duration_ns: u64) {
+        self.imp()
+            .command_finished
+            .set(Some(SurfaceCommandFinished {
+                exit_code,
+                duration_ns,
+            }));
+    }
+
+    /// Get metadata for the most recent completed foreground command.
+    pub fn command_finished(&self) -> Option<SurfaceCommandFinished> {
+        self.imp().command_finished.get()
     }
 
     /// Request the surface to close.

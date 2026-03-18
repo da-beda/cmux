@@ -23,12 +23,11 @@ pub fn build_layout(
     state: &Rc<AppState>,
 ) -> gtk4::Widget {
     match node {
-        LayoutNode::Pane {
-            panel_ids,
-            selected_panel_id,
-        } => build_pane(
-            panel_ids,
-            *selected_panel_id,
+        LayoutNode::Pane { pane } => build_pane(
+            workspace_id,
+            pane.id,
+            &pane.panel_ids,
+            pane.selected_panel_id,
             panels,
             attention_panel_id,
             state,
@@ -54,6 +53,8 @@ pub fn build_layout(
 
 /// Build a pane widget (single or tabbed panels).
 fn build_pane(
+    workspace_id: Uuid,
+    pane_id: Uuid,
     panel_ids: &[Uuid],
     selected_id: Option<Uuid>,
     panels: &HashMap<Uuid, Panel>,
@@ -61,7 +62,7 @@ fn build_pane(
     state: &Rc<AppState>,
 ) -> gtk4::Widget {
     if panel_ids.is_empty() {
-        // Empty pane — show placeholder
+        // Defensive fallback for temporarily empty layout nodes.
         let label = gtk4::Label::new(Some("Empty pane"));
         label.set_hexpand(true);
         label.set_vexpand(true);
@@ -73,6 +74,7 @@ fn build_pane(
         let panel_id = panel_ids[0];
         if let Some(panel) = panels.get(&panel_id) {
             return terminal_panel::create_panel_widget(
+                workspace_id,
                 panel,
                 attention_panel_id == Some(panel_id),
                 state,
@@ -90,6 +92,7 @@ fn build_pane(
     for &panel_id in panel_ids {
         if let Some(panel) = panels.get(&panel_id) {
             let widget = terminal_panel::create_panel_widget(
+                workspace_id,
                 panel,
                 attention_panel_id == Some(panel_id),
                 state,
@@ -104,9 +107,31 @@ fn build_pane(
     if let Some(sel_id) = selected_id {
         stack.set_visible_child_name(&sel_id.to_string());
     }
+    {
+        let state = Rc::clone(state);
+        stack.connect_visible_child_name_notify(move |stack| {
+            let Some(name) = stack.visible_child_name() else {
+                return;
+            };
+            let Ok(panel_id) = Uuid::parse_str(name.as_str()) else {
+                return;
+            };
+
+            let changed = {
+                let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+                tab_manager
+                    .workspace_mut(workspace_id)
+                    .is_some_and(|workspace| workspace.focus_panel(panel_id))
+            };
+            if changed {
+                state.shared.schedule_persist_session();
+            }
+        });
+    }
 
     // If there are tabs, add a tab switcher
     let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    vbox.set_widget_name(&pane_id.to_string());
     if panel_ids.len() > 1 {
         let switcher = gtk4::StackSwitcher::new();
         switcher.set_stack(Some(&stack));
@@ -182,4 +207,119 @@ fn build_split(
     });
 
     paned.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::panel::{LayoutNode, Panel};
+    use crate::ui::test_support;
+
+    fn build_tabbed_workspace() -> (Rc<AppState>, Uuid, Uuid, Uuid) {
+        let shared = std::sync::Arc::new(crate::app::SharedState::new());
+        let state = Rc::new(AppState::new(shared));
+
+        let (workspace_id, first_id, second_id) = {
+            let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+            let workspace = tab_manager.selected_mut().expect("workspace should exist");
+            let first_id = workspace
+                .focused_panel_id
+                .expect("workspace should have a focused panel");
+            let mut first_panel = workspace
+                .panels
+                .get(&first_id)
+                .cloned()
+                .expect("first panel should exist");
+            first_panel.title = Some("shell".into());
+            first_panel.directory = Some("/tmp/one".into());
+
+            let mut second_panel = Panel::new();
+            let second_id = second_panel.id;
+            second_panel.title = Some("editor".into());
+            second_panel.directory = Some("/tmp/two".into());
+
+            workspace.panels.clear();
+            workspace.panels.insert(first_id, first_panel.clone());
+            workspace.panels.insert(second_id, second_panel.clone());
+            workspace.layout = LayoutNode::Pane {
+                pane: crate::model::panel::Pane::new(vec![first_id, second_id], Some(first_id)),
+            };
+            workspace.focused_pane_id = workspace.layout.find_pane_id_with_panel(first_id);
+            workspace.focused_panel_id = Some(first_id);
+            workspace.process_title = first_panel.process_title().to_string();
+            workspace.current_directory = first_panel
+                .directory
+                .clone()
+                .expect("first panel directory should exist");
+
+            (workspace.id, first_id, second_id)
+        };
+
+        (state, workspace_id, first_id, second_id)
+    }
+
+    #[test]
+    fn switching_tabs_updates_workspace_focus_and_metadata() {
+        test_support::run_on_gtk_thread(|| {
+            let (state, workspace_id, first_id, second_id) = build_tabbed_workspace();
+            let (layout, panels) = {
+                let tab_manager = lock_or_recover(&state.shared.tab_manager);
+                let workspace = tab_manager.workspace(workspace_id).unwrap();
+                (workspace.layout.clone(), workspace.panels.clone())
+            };
+
+            let widget = build_layout(workspace_id, &layout, &panels, None, &state);
+            let window = test_support::mount_widget(&widget);
+            let stack = test_support::find_descendant::<gtk4::Stack>(&widget)
+                .expect("tabbed pane should contain a GtkStack");
+            let first_name = first_id.to_string();
+
+            assert_eq!(
+                stack.visible_child_name().as_deref(),
+                Some(first_name.as_str())
+            );
+
+            stack.set_visible_child_name(&second_id.to_string());
+            test_support::flush_main_loop();
+
+            let tab_manager = lock_or_recover(&state.shared.tab_manager);
+            let workspace = tab_manager.workspace(workspace_id).unwrap();
+            assert_eq!(workspace.focused_panel_id, Some(second_id));
+            assert_eq!(workspace.process_title, "editor");
+            assert_eq!(workspace.current_directory, "/tmp/two");
+
+            test_support::close_window(window);
+        });
+    }
+
+    #[test]
+    fn rebuilding_tabbed_content_preserves_selected_panel() {
+        test_support::run_on_gtk_thread(|| {
+            let (state, workspace_id, _first_id, second_id) = build_tabbed_workspace();
+            {
+                let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+                let workspace = tab_manager.workspace_mut(workspace_id).unwrap();
+                assert!(workspace.focus_panel(second_id));
+            }
+
+            let (layout, panels) = {
+                let tab_manager = lock_or_recover(&state.shared.tab_manager);
+                let workspace = tab_manager.workspace(workspace_id).unwrap();
+                (workspace.layout.clone(), workspace.panels.clone())
+            };
+
+            let rebuilt = build_layout(workspace_id, &layout, &panels, None, &state);
+            let window = test_support::mount_widget(&rebuilt);
+            let stack = test_support::find_descendant::<gtk4::Stack>(&rebuilt)
+                .expect("rebuilt tabbed pane should contain a GtkStack");
+            let second_name = second_id.to_string();
+
+            assert_eq!(
+                stack.visible_child_name().as_deref(),
+                Some(second_name.as_str())
+            );
+
+            test_support::close_window(window);
+        });
+    }
 }

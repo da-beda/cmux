@@ -16,8 +16,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::app::{lock_or_recover, SharedState, UiEvent};
-use crate::model::panel::SplitOrientation;
-use crate::model::PanelType;
+use crate::model::panel::{
+    GitBranch, MetadataBlock, MetadataFormat, MetadataItem, PullRequestChecks, PullRequestMetadata,
+    PullRequestState, ShellActivityState, SplitOrientation,
+};
 use crate::model::Workspace;
 
 /// V2 protocol request.
@@ -84,11 +86,16 @@ pub fn dispatch(json_line: &str, state: &Arc<SharedState>) -> Response {
         // System
         "system.ping" => Response::success(id, serde_json::json!({"pong": true})),
         "system.capabilities" => handle_capabilities(id),
+        "window.focus" => handle_window_focus(id, state),
 
         // Workspace commands
         "workspace.list" => handle_workspace_list(id, state),
         "workspace.new" => handle_workspace_new(id, &req.params, state),
         "workspace.create" => handle_workspace_create(id, &req.params, state),
+        "workspace.rename" => handle_workspace_rename(id, &req.params, state),
+        "workspace.reorder" => handle_workspace_reorder(id, &req.params, state),
+        "workspace.pin" => handle_workspace_pin(id, &req.params, state, true),
+        "workspace.unpin" => handle_workspace_pin(id, &req.params, state, false),
         "workspace.select" => handle_workspace_select(id, &req.params, state),
         "workspace.next" => handle_workspace_next(id, &req.params, state),
         "workspace.previous" => handle_workspace_previous(id, &req.params, state),
@@ -97,14 +104,30 @@ pub fn dispatch(json_line: &str, state: &Arc<SharedState>) -> Response {
         "workspace.close" => handle_workspace_close(id, &req.params, state),
         "workspace.set_status" => handle_workspace_set_status(id, &req.params, state),
         "workspace.report_git_branch" => handle_workspace_report_git(id, &req.params, state),
+        "workspace.clear_git_branch" => handle_workspace_clear_git(id, &req.params, state),
+        "workspace.report_pwd" => handle_workspace_report_pwd(id, &req.params, state),
+        "workspace.report_shell_state" => {
+            handle_workspace_report_shell_state(id, &req.params, state)
+        }
+        "workspace.report_ports" => handle_workspace_report_ports(id, &req.params, state),
+        "workspace.clear_ports" => handle_workspace_clear_ports(id, &req.params, state),
+        "workspace.report_tty" => handle_workspace_report_tty(id, &req.params, state),
+        "workspace.report_pr" => handle_workspace_report_pr(id, &req.params, state),
+        "workspace.report_review" => handle_workspace_report_review(id, &req.params, state),
+        "workspace.clear_pr" => handle_workspace_clear_pr(id, &req.params, state),
+        "workspace.report_meta" => handle_workspace_report_meta(id, &req.params, state),
+        "workspace.report_meta_block" => handle_workspace_report_meta_block(id, &req.params, state),
         "workspace.set_progress" => handle_workspace_set_progress(id, &req.params, state),
         "workspace.append_log" => handle_workspace_append_log(id, &req.params, state),
 
         // Pane commands
         "pane.new" => handle_pane_new(id, &req.params, state),
+        "pane.focus" => handle_pane_focus(id, &req.params, state),
 
         // Surface commands
         "surface.send_input" => handle_surface_send_input(id, &req.params, state),
+        "surface.focus" => handle_surface_focus(id, &req.params, state),
+        "surface.close" => handle_surface_close(id, &req.params, state),
 
         // Notification commands
         "notification.create" => handle_notification_create(id, &req.params, state),
@@ -128,9 +151,14 @@ fn handle_capabilities(id: Value) -> Response {
     let methods = vec![
         "system.ping",
         "system.capabilities",
+        "window.focus",
         "workspace.list",
         "workspace.new",
         "workspace.create",
+        "workspace.rename",
+        "workspace.reorder",
+        "workspace.pin",
+        "workspace.unpin",
         "workspace.select",
         "workspace.next",
         "workspace.previous",
@@ -139,13 +167,34 @@ fn handle_capabilities(id: Value) -> Response {
         "workspace.close",
         "workspace.set_status",
         "workspace.report_git_branch",
+        "workspace.clear_git_branch",
+        "workspace.report_pwd",
+        "workspace.report_shell_state",
+        "workspace.report_ports",
+        "workspace.clear_ports",
+        "workspace.report_tty",
+        "workspace.report_pr",
+        "workspace.report_review",
+        "workspace.clear_pr",
+        "workspace.report_meta",
+        "workspace.report_meta_block",
         "workspace.set_progress",
         "workspace.append_log",
         "pane.new",
+        "pane.focus",
         "surface.send_input",
+        "surface.focus",
+        "surface.close",
         "notification.create",
     ];
     Response::success(id, serde_json::json!({"methods": methods}))
+}
+
+fn handle_window_focus(id: Value, state: &Arc<SharedState>) -> Response {
+    if !state.send_ui_event(UiEvent::FocusWindow) {
+        return Response::error(id, "not_ready", "UI is not ready");
+    }
+    Response::success(id, serde_json::json!({"focused": true}))
 }
 
 // -----------------------------------------------------------------------
@@ -163,7 +212,16 @@ fn handle_workspace_list(id: Value, state: &Arc<SharedState>) -> Response {
                 "index": i,
                 "id": ws.id.to_string(),
                 "title": ws.display_title(),
+                "custom_title": ws.custom_title,
+                "pinned": ws.is_pinned,
                 "directory": ws.current_directory,
+                "git_branch": ws.git_branch.as_ref().map(git_branch_json),
+                "shell_state": ws.shell_state.as_ref().map(shell_state_json),
+                "listening_ports": ws.listening_ports,
+                "tty_name": ws.tty_name,
+                "pr": ws.pr_metadata.as_ref().map(pr_metadata_json),
+                "meta_items": ws.metadata_items.iter().map(metadata_item_json).collect::<Vec<_>>(),
+                "meta_blocks": ws.metadata_blocks.iter().map(metadata_block_json).collect::<Vec<_>>(),
                 "panel_count": ws.panels.len(),
                 "unread_count": ws.unread_count,
                 "latest_notification": ws.latest_notification,
@@ -271,6 +329,150 @@ fn handle_workspace_select(id: Value, params: &Value, state: &Arc<SharedState>) 
     }
 }
 
+fn handle_workspace_rename(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let ws_id = match parse_workspace_param(params) {
+        Ok(v) => v,
+        Err(()) => return Response::error(id, "invalid_params", "Invalid workspace UUID"),
+    };
+    let title = params.get("title").and_then(|value| value.as_str());
+
+    let workspace_id = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let workspace_id = if let Some(workspace_id) = ws_id {
+            workspace_id
+        } else if let Some(workspace_id) = tm.selected_id() {
+            workspace_id
+        } else {
+            return Response::error(id, "not_found", "No workspace selected");
+        };
+
+        if tm.workspace(workspace_id).is_none() {
+            None
+        } else {
+            let _ = tm.rename_workspace(workspace_id, title);
+            Some(workspace_id)
+        }
+    };
+
+    if let Some(workspace_id) = workspace_id {
+        state.notify_ui_refresh();
+        let title = {
+            let tm = lock_or_recover(&state.tab_manager);
+            tm.workspace(workspace_id)
+                .map(|workspace| workspace.display_title().to_string())
+                .unwrap_or_default()
+        };
+        Response::success(
+            id,
+            serde_json::json!({
+                "workspace_id": workspace_id.to_string(),
+                "title": title,
+            }),
+        )
+    } else {
+        Response::error(id, "not_found", "Workspace not found")
+    }
+}
+
+fn handle_workspace_reorder(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let to_index = match parse_usize_param(&id, params, "to_index") {
+        Ok(Some(index)) => index,
+        Ok(None) => return Response::error(id, "invalid_params", "Provide 'to_index'"),
+        Err(response) => return response,
+    };
+    let from_index = match parse_usize_param(&id, params, "from_index") {
+        Ok(index) => index,
+        Err(response) => return response,
+    };
+    let ws_id = match parse_workspace_param(params) {
+        Ok(v) => v,
+        Err(()) => return Response::error(id, "invalid_params", "Invalid workspace UUID"),
+    };
+
+    let result = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let from_index = if let Some(from_index) = from_index {
+            from_index
+        } else if let Some(workspace_id) = ws_id {
+            match tm.iter().position(|workspace| workspace.id == workspace_id) {
+                Some(index) => index,
+                None => return Response::error(id, "not_found", "Workspace not found"),
+            }
+        } else {
+            return Response::error(
+                id,
+                "invalid_params",
+                "Provide 'from_index' or 'workspace'/'workspace_id'",
+            );
+        };
+
+        let workspace_id = tm.get(from_index).map(|workspace| workspace.id);
+        if tm.move_workspace(from_index, to_index) {
+            workspace_id.map(|workspace_id| (workspace_id, from_index))
+        } else {
+            None
+        }
+    };
+
+    if let Some((workspace_id, from_index)) = result {
+        state.notify_ui_refresh();
+        Response::success(
+            id,
+            serde_json::json!({
+                "workspace_id": workspace_id.to_string(),
+                "from_index": from_index,
+                "to_index": to_index,
+            }),
+        )
+    } else {
+        Response::error(
+            id,
+            "invalid_params",
+            "Workspace reorder is invalid for the requested indices or pin section",
+        )
+    }
+}
+
+fn handle_workspace_pin(
+    id: Value,
+    params: &Value,
+    state: &Arc<SharedState>,
+    pinned: bool,
+) -> Response {
+    let ws_id = match parse_workspace_param(params) {
+        Ok(v) => v,
+        Err(()) => return Response::error(id, "invalid_params", "Invalid workspace UUID"),
+    };
+
+    let result = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let workspace_id = if let Some(workspace_id) = ws_id {
+            workspace_id
+        } else if let Some(workspace_id) = tm.selected_id() {
+            workspace_id
+        } else {
+            return Response::error(id, "not_found", "No workspace selected");
+        };
+
+        tm.set_workspace_pinned(workspace_id, pinned)
+            .map(|index| (workspace_id, index))
+    };
+
+    if let Some((workspace_id, index)) = result {
+        state.notify_ui_refresh();
+        Response::success(
+            id,
+            serde_json::json!({
+                "workspace_id": workspace_id.to_string(),
+                "pinned": pinned,
+                "index": index,
+            }),
+        )
+    } else {
+        Response::error(id, "not_found", "Workspace not found")
+    }
+}
+
 fn handle_workspace_next(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
     let wrap = params.get("wrap").and_then(|v| v.as_bool()).unwrap_or(true);
     let selected_workspace = {
@@ -282,7 +484,10 @@ fn handle_workspace_next(id: Value, params: &Value, state: &Arc<SharedState>) ->
         mark_workspace_read(state, workspace_id);
     }
     state.notify_ui_refresh();
-    Response::success(id, serde_json::json!({"ok": true}))
+    Response::success(
+        id,
+        serde_json::json!({"ok": true, "workspace_id": selected_workspace.map(|id| id.to_string())}),
+    )
 }
 
 fn handle_workspace_previous(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
@@ -296,7 +501,10 @@ fn handle_workspace_previous(id: Value, params: &Value, state: &Arc<SharedState>
         mark_workspace_read(state, workspace_id);
     }
     state.notify_ui_refresh();
-    Response::success(id, serde_json::json!({"ok": true}))
+    Response::success(
+        id,
+        serde_json::json!({"ok": true, "workspace_id": selected_workspace.map(|id| id.to_string())}),
+    )
 }
 
 fn handle_workspace_last(id: Value, state: &Arc<SharedState>) -> Response {
@@ -309,7 +517,10 @@ fn handle_workspace_last(id: Value, state: &Arc<SharedState>) -> Response {
         mark_workspace_read(state, workspace_id);
     }
     state.notify_ui_refresh();
-    Response::success(id, serde_json::json!({"ok": true}))
+    Response::success(
+        id,
+        serde_json::json!({"ok": true, "workspace_id": selected_workspace.map(|id| id.to_string())}),
+    )
 }
 
 fn handle_workspace_latest_unread(id: Value, state: &Arc<SharedState>) -> Response {
@@ -404,9 +615,9 @@ fn handle_workspace_set_status(id: Value, params: &Value, state: &Arc<SharedStat
 }
 
 fn handle_workspace_report_git(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
-    let ws_id = match parse_workspace_param(params) {
-        Ok(v) => v,
-        Err(()) => return Response::error(id, "invalid_params", "Invalid workspace UUID"),
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
     };
     let branch = params.get("branch").and_then(|v| v.as_str());
     let is_dirty = params
@@ -420,29 +631,411 @@ fn handle_workspace_report_git(id: Value, params: &Value, state: &Arc<SharedStat
 
     let updated = {
         let mut tm = lock_or_recover(&state.tab_manager);
-        let ws = if let Some(wid) = ws_id {
-            tm.workspace_mut(wid)
-        } else {
-            tm.selected_mut()
-        };
-
-        if let Some(ws) = ws {
-            ws.git_branch = Some(crate::model::panel::GitBranch {
-                branch: crate::model::workspace::truncate_str(branch, 256).to_string(),
-                is_dirty,
-            });
-            true
-        } else {
-            false
-        }
+        let workspace = tm.workspace_mut(target.workspace_id).unwrap();
+        workspace.set_panel_git_branch(target.panel_id, branch, is_dirty)
     };
 
     if updated {
         state.notify_ui_refresh();
-        Response::success(id, serde_json::json!({"ok": true}))
-    } else {
-        Response::error(id, "not_found", "Workspace not found")
     }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+        }),
+    )
+}
+
+fn handle_workspace_clear_git(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+
+    let updated = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        tm.workspace_mut(target.workspace_id)
+            .unwrap()
+            .clear_panel_git_branch(target.panel_id)
+    };
+
+    if updated {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+        }),
+    )
+}
+
+fn handle_workspace_report_pwd(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let Some(path) = params.get("path").and_then(|v| v.as_str()) else {
+        return Response::error(id, "invalid_params", "Provide 'path'");
+    };
+
+    let updated = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        tm.workspace_mut(target.workspace_id)
+            .unwrap()
+            .set_panel_directory(
+                target.panel_id,
+                crate::model::workspace::truncate_str(path, 4096),
+            )
+    };
+
+    if updated {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+            "path": crate::model::workspace::truncate_str(path, 4096),
+        }),
+    )
+}
+
+fn handle_workspace_report_shell_state(
+    id: Value,
+    params: &Value,
+    state: &Arc<SharedState>,
+) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let Some(raw_state) = params.get("state").and_then(|v| v.as_str()) else {
+        return Response::error(id, "invalid_params", "Provide 'state'");
+    };
+    let shell_state = match raw_state {
+        "prompt" => ShellActivityState::Prompt,
+        "running" => ShellActivityState::Running,
+        _ => {
+            return Response::error(
+                id,
+                "invalid_params",
+                "Invalid shell state; expected 'prompt' or 'running'",
+            )
+        }
+    };
+    let label = params.get("label").and_then(|v| v.as_str());
+
+    let updated = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        tm.workspace_mut(target.workspace_id)
+            .unwrap()
+            .set_panel_shell_state(target.panel_id, shell_state.clone(), label)
+    };
+
+    if updated {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+            "shell_state": shell_state_json(&crate::model::panel::ShellState {
+                state: shell_state,
+                label: label.map(|value| value.to_string()),
+            }),
+        }),
+    )
+}
+
+fn handle_workspace_report_ports(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let Some(raw_ports) = params.get("ports").and_then(|v| v.as_array()) else {
+        return Response::error(id, "invalid_params", "Provide 'ports' as an array");
+    };
+    let mut ports = Vec::with_capacity(raw_ports.len());
+    for raw_port in raw_ports {
+        let Some(port) = raw_port.as_u64() else {
+            return Response::error(id, "invalid_params", "Ports must be integers");
+        };
+        let Ok(port) = u16::try_from(port) else {
+            return Response::error(id, "invalid_params", "Port is out of range");
+        };
+        if port == 0 {
+            return Response::error(id, "invalid_params", "Port must be 1-65535");
+        }
+        ports.push(port);
+    }
+
+    let updated = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        tm.workspace_mut(target.workspace_id)
+            .unwrap()
+            .set_panel_ports(target.panel_id, ports.clone())
+    };
+
+    if updated {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+            "ports": ports,
+        }),
+    )
+}
+
+fn handle_workspace_clear_ports(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+
+    let updated = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        tm.workspace_mut(target.workspace_id)
+            .unwrap()
+            .clear_panel_ports(target.panel_id)
+    };
+
+    if updated {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+        }),
+    )
+}
+
+fn handle_workspace_report_tty(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let Some(tty_name) = params.get("tty_name").and_then(|v| v.as_str()) else {
+        return Response::error(id, "invalid_params", "Provide 'tty_name'");
+    };
+
+    let updated = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        tm.workspace_mut(target.workspace_id)
+            .unwrap()
+            .set_panel_tty(target.panel_id, tty_name)
+    };
+
+    if updated {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+            "tty_name": crate::model::workspace::truncate_str(tty_name, 512),
+        }),
+    )
+}
+
+fn handle_workspace_report_pr(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let metadata = match parse_pull_request_params(&id, params, "PR") {
+        Ok(metadata) => metadata,
+        Err(response) => return response,
+    };
+
+    let updated = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        tm.workspace_mut(target.workspace_id)
+            .unwrap()
+            .set_panel_pr_metadata(target.panel_id, metadata.clone())
+    };
+
+    if updated {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+            "pr": pr_metadata_json(&metadata),
+        }),
+    )
+}
+
+fn handle_workspace_report_review(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let label = params.get("label").and_then(|v| v.as_str()).unwrap_or("MR");
+    let state_value = match parse_pull_request_state(&id, params.get("state")) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let checks = match parse_pull_request_checks(&id, params.get("checks")) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let number = match params.get("number").and_then(|v| v.as_u64()) {
+        Some(number) => match u32::try_from(number) {
+            Ok(number) if number > 0 => Some(number),
+            _ => return Response::error(id, "invalid_params", "Invalid review number"),
+        },
+        None => None,
+    };
+    let url = params.get("url").and_then(|v| v.as_str());
+    let title = params.get("title").and_then(|v| v.as_str());
+
+    let updated = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        tm.workspace_mut(target.workspace_id)
+            .unwrap()
+            .set_panel_review(
+                target.panel_id,
+                label,
+                state_value,
+                checks,
+                number,
+                url,
+                title,
+            )
+    };
+
+    if updated {
+        state.notify_ui_refresh();
+    }
+    let pr = {
+        let tm = lock_or_recover(&state.tab_manager);
+        tm.workspace(target.workspace_id)
+            .and_then(|workspace| workspace.panel(target.panel_id))
+            .and_then(|panel| panel.pr_metadata.as_ref())
+            .cloned()
+    };
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+            "pr": pr.as_ref().map(pr_metadata_json),
+        }),
+    )
+}
+
+fn handle_workspace_clear_pr(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+
+    let updated = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        tm.workspace_mut(target.workspace_id)
+            .unwrap()
+            .clear_panel_pr_metadata(target.panel_id)
+    };
+
+    if updated {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+        }),
+    )
+}
+
+fn handle_workspace_report_meta(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let item = match parse_metadata_item(&id, params) {
+        Ok(item) => item,
+        Err(response) => return response,
+    };
+
+    let updated = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        tm.workspace_mut(target.workspace_id)
+            .unwrap()
+            .upsert_panel_metadata_item(target.panel_id, item.clone())
+    };
+
+    if updated {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+            "item": metadata_item_json(&item),
+        }),
+    )
+}
+
+fn handle_workspace_report_meta_block(
+    id: Value,
+    params: &Value,
+    state: &Arc<SharedState>,
+) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let block = match parse_metadata_block(&id, params) {
+        Ok(block) => block,
+        Err(response) => return response,
+    };
+
+    let updated = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        tm.workspace_mut(target.workspace_id)
+            .unwrap()
+            .upsert_panel_metadata_block(target.panel_id, block.clone())
+    };
+
+    if updated {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+            "block": metadata_block_json(&block),
+        }),
+    )
 }
 
 fn handle_workspace_set_progress(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
@@ -537,12 +1130,63 @@ fn handle_pane_new(id: Value, params: &Value, state: &Arc<SharedState>) -> Respo
 
     let mut tm = lock_or_recover(&state.tab_manager);
     if let Some(ws) = tm.selected_mut() {
-        let panel_id = ws.split(orientation, PanelType::Terminal);
+        let panel_id = ws.split(orientation);
         drop(tm);
         state.notify_ui_refresh();
         Response::success(id, serde_json::json!({"panel_id": panel_id.to_string()}))
     } else {
         Response::error(id, "not_found", "No workspace selected")
+    }
+}
+
+fn handle_pane_focus(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let pane_id = match parse_uuid_param(params, "pane")
+        .or_else(|_| parse_uuid_param(params, "pane_id"))
+    {
+        Ok(Some(pane_id)) => pane_id,
+        Ok(None) => return Response::error(id, "invalid_params", "Provide 'pane' or 'pane_id'"),
+        Err(()) => return Response::error(id, "invalid_params", "Invalid pane UUID"),
+    };
+
+    let focused = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let workspace_id = match tm
+            .find_workspace_with_pane(pane_id)
+            .map(|workspace| workspace.id)
+        {
+            Some(workspace_id) => workspace_id,
+            None => return Response::error(id, "not_found", "Pane not found"),
+        };
+        let _ = tm.select_by_id(workspace_id);
+        let workspace = tm.workspace_mut(workspace_id).unwrap();
+        if workspace.focus_pane(pane_id) {
+            let panel_id = workspace.focused_surface_id();
+            Some((workspace_id, panel_id))
+        } else {
+            None
+        }
+    };
+
+    if let Some((workspace_id, panel_id)) = focused {
+        mark_workspace_read(state, workspace_id);
+        state.notify_ui_refresh();
+        if let Some(panel_id) = panel_id {
+            let _ = state.send_ui_event(UiEvent::FocusSurface {
+                panel_id,
+                present_window: true,
+            });
+        }
+        Response::success(
+            id,
+            serde_json::json!({
+                "pane_id": pane_id.to_string(),
+                "workspace_id": workspace_id.to_string(),
+                "surface": panel_id.map(|id| id.to_string()),
+                "focused": true,
+            }),
+        )
+    } else {
+        Response::error(id, "not_found", "Pane not found")
     }
 }
 
@@ -608,6 +1252,80 @@ fn handle_surface_send_input(id: Value, params: &Value, state: &Arc<SharedState>
         serde_json::json!({
             "sent": true,
             "surface": panel_id.to_string(),
+        }),
+    )
+}
+
+fn handle_surface_focus(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let panel_id = match parse_surface_param(params) {
+        Ok(Some(panel_id)) => panel_id,
+        Ok(None) => return Response::error(id, "invalid_params", "Provide 'surface' or 'panel'"),
+        Err(()) => return Response::error(id, "invalid_params", "Invalid surface/panel UUID"),
+    };
+
+    let focused = {
+        let mut tab_manager = lock_or_recover(&state.tab_manager);
+        let workspace_id = match tab_manager
+            .find_workspace_with_panel(panel_id)
+            .map(|workspace| workspace.id)
+        {
+            Some(workspace_id) => workspace_id,
+            None => return Response::error(id, "not_found", "Surface not found"),
+        };
+
+        let _ = tab_manager.select_by_id(workspace_id);
+        let workspace = tab_manager.workspace_mut(workspace_id).unwrap();
+        if workspace.focus_surface(panel_id) {
+            Some((workspace_id, workspace.focused_pane_id))
+        } else {
+            None
+        }
+    };
+
+    if let Some((workspace_id, pane_id)) = focused {
+        mark_workspace_read(state, workspace_id);
+        state.notify_ui_refresh();
+        let _ = state.send_ui_event(UiEvent::FocusSurface {
+            panel_id,
+            present_window: true,
+        });
+        Response::success(
+            id,
+            serde_json::json!({
+                "surface": panel_id.to_string(),
+                "pane_id": pane_id.map(|id| id.to_string()),
+                "workspace_id": workspace_id.to_string(),
+                "focused": true,
+            }),
+        )
+    } else {
+        Response::error(id, "not_found", "Surface not found")
+    }
+}
+
+fn handle_surface_close(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let panel_id = match parse_surface_param(params) {
+        Ok(Some(panel_id)) => panel_id,
+        Ok(None) => return Response::error(id, "invalid_params", "Provide 'surface' or 'panel'"),
+        Err(()) => return Response::error(id, "invalid_params", "Invalid surface/panel UUID"),
+    };
+
+    {
+        let tab_manager = lock_or_recover(&state.tab_manager);
+        if tab_manager.find_workspace_with_panel(panel_id).is_none() {
+            return Response::error(id, "not_found", "Surface not found");
+        }
+    }
+
+    if !state.send_ui_event(UiEvent::CloseSurface { panel_id }) {
+        return Response::error(id, "not_ready", "UI is not ready");
+    }
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "surface": panel_id.to_string(),
+            "closed": true,
         }),
     )
 }
@@ -700,6 +1418,378 @@ fn handle_notification_create(id: Value, params: &Value, state: &Arc<SharedState
     )
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ResolvedReportTarget {
+    workspace_id: uuid::Uuid,
+    panel_id: uuid::Uuid,
+}
+
+fn resolve_report_target(
+    id: &Value,
+    params: &Value,
+    state: &Arc<SharedState>,
+) -> Result<ResolvedReportTarget, Response> {
+    let workspace_id = match parse_workspace_param(params) {
+        Ok(value) => value,
+        Err(()) => {
+            return Err(Response::error(
+                id.clone(),
+                "invalid_params",
+                "Invalid workspace UUID",
+            ))
+        }
+    };
+    let panel_id = match parse_surface_param(params) {
+        Ok(value) => value,
+        Err(()) => {
+            return Err(Response::error(
+                id.clone(),
+                "invalid_params",
+                "Invalid surface/panel UUID",
+            ))
+        }
+    };
+
+    let tm = lock_or_recover(&state.tab_manager);
+    if let Some(panel_id) = panel_id {
+        let Some(found_workspace_id) = tm
+            .find_workspace_with_panel(panel_id)
+            .map(|workspace| workspace.id)
+        else {
+            return Err(Response::error(
+                id.clone(),
+                "not_found",
+                "Surface not found",
+            ));
+        };
+        if let Some(workspace_id) = workspace_id {
+            if tm.workspace(workspace_id).is_none() {
+                return Err(Response::error(
+                    id.clone(),
+                    "not_found",
+                    "Workspace not found",
+                ));
+            }
+            if workspace_id != found_workspace_id {
+                return Err(Response::error(
+                    id.clone(),
+                    "invalid_params",
+                    "Surface does not belong to the specified workspace",
+                ));
+            }
+            return Ok(ResolvedReportTarget {
+                workspace_id,
+                panel_id,
+            });
+        }
+        return Ok(ResolvedReportTarget {
+            workspace_id: found_workspace_id,
+            panel_id,
+        });
+    }
+
+    let workspace_id = if let Some(workspace_id) = workspace_id {
+        if tm.workspace(workspace_id).is_none() {
+            return Err(Response::error(
+                id.clone(),
+                "not_found",
+                "Workspace not found",
+            ));
+        }
+        workspace_id
+    } else if let Some(workspace_id) = tm.selected_id() {
+        workspace_id
+    } else {
+        return Err(Response::error(
+            id.clone(),
+            "not_found",
+            "No workspace selected",
+        ));
+    };
+
+    let workspace = tm.workspace(workspace_id).unwrap();
+    let Some(panel_id) = workspace.focused_panel_id else {
+        return Err(Response::error(
+            id.clone(),
+            "not_found",
+            "No focused surface",
+        ));
+    };
+    Ok(ResolvedReportTarget {
+        workspace_id,
+        panel_id,
+    })
+}
+
+fn git_branch_json(branch: &GitBranch) -> Value {
+    serde_json::json!({
+        "branch": branch.branch,
+        "is_dirty": branch.is_dirty,
+    })
+}
+
+fn shell_state_json(state: &crate::model::panel::ShellState) -> Value {
+    serde_json::json!({
+        "state": match state.state {
+            ShellActivityState::Prompt => "prompt",
+            ShellActivityState::Running => "running",
+        },
+        "label": state.label,
+    })
+}
+
+fn pr_metadata_json(metadata: &PullRequestMetadata) -> Value {
+    serde_json::json!({
+        "number": metadata.number,
+        "url": metadata.url,
+        "label": metadata.label,
+        "title": metadata.title,
+        "state": match metadata.state {
+            PullRequestState::Open => "open",
+            PullRequestState::Merged => "merged",
+            PullRequestState::Closed => "closed",
+        },
+        "branch": metadata.branch,
+        "checks": metadata.checks.as_ref().map(|checks| match checks {
+            PullRequestChecks::Pass => "pass",
+            PullRequestChecks::Fail => "fail",
+            PullRequestChecks::Pending => "pending",
+        }),
+    })
+}
+
+fn metadata_item_json(item: &MetadataItem) -> Value {
+    serde_json::json!({
+        "key": item.key,
+        "label": item.label,
+        "value": item.value,
+        "icon": item.icon,
+        "color": item.color,
+        "url": item.url,
+        "priority": item.priority,
+        "format": match item.format {
+            MetadataFormat::Plain => "plain",
+            MetadataFormat::Markdown => "markdown",
+        },
+        "timestamp": item.timestamp,
+    })
+}
+
+fn metadata_block_json(block: &MetadataBlock) -> Value {
+    serde_json::json!({
+        "key": block.key,
+        "title": block.title,
+        "content": block.content,
+        "style": block.style,
+        "priority": block.priority,
+        "format": match block.format {
+            MetadataFormat::Plain => "plain",
+            MetadataFormat::Markdown => "markdown",
+        },
+        "timestamp": block.timestamp,
+    })
+}
+
+fn parse_pull_request_state(
+    id: &Value,
+    value: Option<&Value>,
+) -> Result<PullRequestState, Response> {
+    match value.and_then(|value| value.as_str()).unwrap_or("open") {
+        "open" => Ok(PullRequestState::Open),
+        "merged" => Ok(PullRequestState::Merged),
+        "closed" => Ok(PullRequestState::Closed),
+        _ => Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Invalid PR state; expected 'open', 'merged', or 'closed'",
+        )),
+    }
+}
+
+fn parse_pull_request_checks(
+    id: &Value,
+    value: Option<&Value>,
+) -> Result<Option<PullRequestChecks>, Response> {
+    match value.and_then(|value| value.as_str()) {
+        None => Ok(None),
+        Some("pass") => Ok(Some(PullRequestChecks::Pass)),
+        Some("fail") => Ok(Some(PullRequestChecks::Fail)),
+        Some("pending") => Ok(Some(PullRequestChecks::Pending)),
+        Some(_) => Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Invalid PR checks; expected 'pass', 'fail', or 'pending'",
+        )),
+    }
+}
+
+fn parse_pull_request_params(
+    id: &Value,
+    params: &Value,
+    default_label: &str,
+) -> Result<PullRequestMetadata, Response> {
+    let Some(number) = params.get("number").and_then(|value| value.as_u64()) else {
+        return Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Provide 'number'",
+        ));
+    };
+    let Ok(number) = u32::try_from(number) else {
+        return Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Invalid PR number",
+        ));
+    };
+    if number == 0 {
+        return Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Invalid PR number",
+        ));
+    }
+
+    let label = params
+        .get("label")
+        .and_then(|value| value.as_str())
+        .unwrap_or(default_label);
+    if label.trim().is_empty() {
+        return Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Provide a non-empty PR label",
+        ));
+    }
+
+    Ok(PullRequestMetadata {
+        number: Some(number),
+        url: params
+            .get("url")
+            .and_then(|value| value.as_str())
+            .map(|value| crate::model::workspace::truncate_str(value, 2048).to_string()),
+        label: crate::model::workspace::truncate_str(label, 16).to_string(),
+        title: params
+            .get("title")
+            .and_then(|value| value.as_str())
+            .map(|value| crate::model::workspace::truncate_str(value, 256).to_string()),
+        state: parse_pull_request_state(id, params.get("state"))?,
+        branch: params
+            .get("branch")
+            .and_then(|value| value.as_str())
+            .map(|value| crate::model::workspace::truncate_str(value, 256).to_string()),
+        checks: parse_pull_request_checks(id, params.get("checks"))?,
+    })
+}
+
+fn parse_metadata_item(id: &Value, params: &Value) -> Result<MetadataItem, Response> {
+    let Some(key) = params.get("key").and_then(|value| value.as_str()) else {
+        return Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Provide 'key'",
+        ));
+    };
+    let Some(value) = params.get("value").and_then(|value| value.as_str()) else {
+        return Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Provide 'value'",
+        ));
+    };
+    let label = params
+        .get("label")
+        .and_then(|value| value.as_str())
+        .unwrap_or(key);
+    let priority = match params.get("priority").and_then(|value| value.as_i64()) {
+        Some(priority) => i32::try_from(priority).map_err(|_| {
+            Response::error(id.clone(), "invalid_params", "Priority is out of range")
+        })?,
+        None => 0,
+    };
+    let format = parse_metadata_format(id, params.get("format"))?;
+
+    Ok(MetadataItem {
+        key: crate::model::workspace::truncate_str(key, 256).to_string(),
+        label: crate::model::workspace::truncate_str(label, 256).to_string(),
+        value: crate::model::workspace::truncate_str(value, 4096).to_string(),
+        icon: params
+            .get("icon")
+            .and_then(|value| value.as_str())
+            .map(|value| crate::model::workspace::truncate_str(value, 256).to_string()),
+        color: params
+            .get("color")
+            .and_then(|value| value.as_str())
+            .map(|value| crate::model::workspace::truncate_str(value, 64).to_string()),
+        url: params
+            .get("url")
+            .and_then(|value| value.as_str())
+            .map(|value| crate::model::workspace::truncate_str(value, 2048).to_string()),
+        priority,
+        format,
+        timestamp: current_timestamp(),
+    })
+}
+
+fn parse_metadata_block(id: &Value, params: &Value) -> Result<MetadataBlock, Response> {
+    let Some(key) = params.get("key").and_then(|value| value.as_str()) else {
+        return Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Provide 'key'",
+        ));
+    };
+    let Some(content) = params.get("content").and_then(|value| value.as_str()) else {
+        return Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Provide 'content'",
+        ));
+    };
+    let priority = match params.get("priority").and_then(|value| value.as_i64()) {
+        Some(priority) => i32::try_from(priority).map_err(|_| {
+            Response::error(id.clone(), "invalid_params", "Priority is out of range")
+        })?,
+        None => 0,
+    };
+    let format = parse_metadata_format(id, params.get("format"))?;
+
+    Ok(MetadataBlock {
+        key: crate::model::workspace::truncate_str(key, 256).to_string(),
+        title: params
+            .get("title")
+            .and_then(|value| value.as_str())
+            .map(|value| crate::model::workspace::truncate_str(value, 256).to_string()),
+        content: crate::model::workspace::truncate_str(content, 8192).to_string(),
+        style: params
+            .get("style")
+            .and_then(|value| value.as_str())
+            .map(|value| crate::model::workspace::truncate_str(value, 128).to_string()),
+        priority,
+        format,
+        timestamp: current_timestamp(),
+    })
+}
+
+fn parse_metadata_format(id: &Value, value: Option<&Value>) -> Result<MetadataFormat, Response> {
+    match value.and_then(|value| value.as_str()).unwrap_or("plain") {
+        "plain" => Ok(MetadataFormat::Plain),
+        "markdown" => Ok(MetadataFormat::Markdown),
+        _ => Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Invalid metadata format; expected 'plain' or 'markdown'",
+        )),
+    }
+}
+
+fn current_timestamp() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
 fn mark_workspace_read(state: &Arc<SharedState>, workspace_id: uuid::Uuid) {
     lock_or_recover(&state.notifications).mark_workspace_read(workspace_id);
 
@@ -716,11 +1806,30 @@ fn parse_workspace_param(params: &Value) -> Result<Option<uuid::Uuid>, ()> {
         .get("workspace")
         .or_else(|| params.get("workspace_id"));
     match val {
+        Some(Value::Null) => Ok(None),
         Some(v) => match v.as_str().map(uuid::Uuid::parse_str) {
             Some(Ok(id)) => Ok(Some(id)),
             _ => Err(()),
         },
         None => Ok(None),
+    }
+}
+
+fn parse_uuid_param(params: &Value, key: &str) -> Result<Option<uuid::Uuid>, ()> {
+    match params.get(key) {
+        Some(Value::Null) => Ok(None),
+        Some(value) => match value.as_str().map(uuid::Uuid::parse_str) {
+            Some(Ok(id)) => Ok(Some(id)),
+            _ => Err(()),
+        },
+        None => Ok(None),
+    }
+}
+
+fn parse_surface_param(params: &Value) -> Result<Option<uuid::Uuid>, ()> {
+    match parse_uuid_param(params, "surface")? {
+        Some(surface) => Ok(Some(surface)),
+        None => parse_uuid_param(params, "panel"),
     }
 }
 
@@ -747,10 +1856,15 @@ fn parse_usize_param(id: &Value, params: &Value, key: &str) -> Result<Option<usi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::TabManager;
+
+    fn test_state() -> Arc<SharedState> {
+        Arc::new(SharedState::with_tab_manager(TabManager::new()))
+    }
 
     #[test]
     fn test_notification_create_updates_workspace_attention() {
-        let state = Arc::new(SharedState::new());
+        let state = test_state();
         let (workspace_id, panel_id) = {
             let tab_manager = lock_or_recover(&state.tab_manager);
             let workspace = tab_manager.selected().unwrap();
@@ -784,7 +1898,7 @@ mod tests {
 
     #[test]
     fn test_workspace_latest_unread_selects_newest_workspace() {
-        let state = Arc::new(SharedState::new());
+        let state = test_state();
         let workspace_one_id = lock_or_recover(&state.tab_manager).selected_id().unwrap();
 
         let new_workspace_request = serde_json::json!({
@@ -853,7 +1967,7 @@ mod tests {
 
     #[test]
     fn test_surface_send_input_dispatches_ui_event() {
-        let state = Arc::new(SharedState::new());
+        let state = test_state();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         state.install_ui_event_sender(tx);
 
@@ -889,7 +2003,7 @@ mod tests {
 
     #[test]
     fn test_workspace_create_alias_and_legacy_response_field() {
-        let state = Arc::new(SharedState::new());
+        let state = test_state();
         let selected_before = lock_or_recover(&state.tab_manager).selected_id();
 
         let response = dispatch(
@@ -915,7 +2029,7 @@ mod tests {
 
     #[test]
     fn test_workspace_list_keeps_selected_alias() {
-        let state = Arc::new(SharedState::new());
+        let state = test_state();
 
         let response = dispatch(r#"{"id":1,"method":"workspace.list","params":{}}"#, &state);
 
@@ -932,7 +2046,7 @@ mod tests {
 
     #[test]
     fn test_workspace_select_accepts_legacy_workspace_id_param() {
-        let state = Arc::new(SharedState::new());
+        let state = test_state();
         let workspace_id = lock_or_recover(&state.tab_manager).selected_id().unwrap();
 
         let response = dispatch(
@@ -956,7 +2070,7 @@ mod tests {
 
     #[test]
     fn test_workspace_create_accepts_legacy_cwd_param() {
-        let state = Arc::new(SharedState::new());
+        let state = test_state();
 
         let response = dispatch(
             r#"{"id":1,"method":"workspace.create","params":{"cwd":"/tmp/cmux-legacy"}}"#,
@@ -974,5 +2088,182 @@ mod tests {
             .workspace(workspace_id)
             .expect("workspace should exist");
         assert_eq!(workspace.current_directory, "/tmp/cmux-legacy");
+    }
+
+    #[test]
+    fn test_rich_report_metadata_updates_workspace_summary() {
+        let state = test_state();
+        let (workspace_id, panel_id) = {
+            let tab_manager = lock_or_recover(&state.tab_manager);
+            let workspace = tab_manager.selected().unwrap();
+            (workspace.id, workspace.focused_panel_id.unwrap())
+        };
+
+        let requests = [
+            serde_json::json!({
+                "id": 1,
+                "method": "workspace.report_pwd",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": panel_id.to_string(),
+                    "path": "/tmp/cmux-metadata"
+                }
+            }),
+            serde_json::json!({
+                "id": 2,
+                "method": "workspace.report_shell_state",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": panel_id.to_string(),
+                    "state": "running",
+                    "label": "cargo test"
+                }
+            }),
+            serde_json::json!({
+                "id": 3,
+                "method": "workspace.report_ports",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": panel_id.to_string(),
+                    "ports": [3000, 8080]
+                }
+            }),
+            serde_json::json!({
+                "id": 4,
+                "method": "workspace.report_tty",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": panel_id.to_string(),
+                    "tty_name": "pts/42"
+                }
+            }),
+            serde_json::json!({
+                "id": 5,
+                "method": "workspace.report_pr",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": panel_id.to_string(),
+                    "number": 828,
+                    "url": "https://example.com/pr/828",
+                    "label": "PR",
+                    "title": "Linux metadata",
+                    "state": "open",
+                    "branch": "linux-port",
+                    "checks": "pending"
+                }
+            }),
+            serde_json::json!({
+                "id": 6,
+                "method": "workspace.report_meta",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": panel_id.to_string(),
+                    "key": "task",
+                    "label": "Task",
+                    "value": "review",
+                    "priority": 5
+                }
+            }),
+            serde_json::json!({
+                "id": 7,
+                "method": "workspace.report_meta_block",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": panel_id.to_string(),
+                    "key": "notes",
+                    "title": "Notes",
+                    "content": "line one\nline two",
+                    "format": "markdown"
+                }
+            }),
+        ];
+
+        for request in requests {
+            let response = dispatch(&request.to_string(), &state);
+            assert!(response.ok, "{response:?}");
+        }
+
+        let tab_manager = lock_or_recover(&state.tab_manager);
+        let workspace = tab_manager.workspace(workspace_id).unwrap();
+        assert_eq!(workspace.current_directory, "/tmp/cmux-metadata");
+        assert_eq!(
+            workspace.shell_state.as_ref().map(|state| &state.state),
+            Some(&ShellActivityState::Running)
+        );
+        assert_eq!(workspace.listening_ports, vec![3000, 8080]);
+        assert_eq!(workspace.tty_name.as_deref(), Some("pts/42"));
+        assert_eq!(
+            workspace.pr_metadata.as_ref().and_then(|pr| pr.number),
+            Some(828)
+        );
+        assert_eq!(
+            workspace
+                .metadata_items
+                .first()
+                .map(|item| item.key.as_str()),
+            Some("task")
+        );
+        assert_eq!(
+            workspace
+                .metadata_blocks
+                .first()
+                .map(|block| block.key.as_str()),
+            Some("notes")
+        );
+    }
+
+    #[test]
+    fn test_report_target_rejects_workspace_surface_mismatch() {
+        let state = test_state();
+        let other_workspace_id = {
+            let mut tab_manager = lock_or_recover(&state.tab_manager);
+            let selected_id = tab_manager.selected_id().unwrap();
+            let new_id = tab_manager.add_workspace(Workspace::new());
+            let _ = tab_manager.select_by_id(selected_id);
+            new_id
+        };
+        let selected_panel = {
+            let tab_manager = lock_or_recover(&state.tab_manager);
+            tab_manager.selected().unwrap().focused_panel_id.unwrap()
+        };
+
+        let response = dispatch(
+            &serde_json::json!({
+                "id": 1,
+                "method": "workspace.report_git_branch",
+                "params": {
+                    "workspace": other_workspace_id.to_string(),
+                    "surface": selected_panel.to_string(),
+                    "branch": "main"
+                }
+            })
+            .to_string(),
+            &state,
+        );
+
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_ref().map(|error| error.code.as_str()),
+            Some("invalid_params")
+        );
+    }
+
+    #[test]
+    fn test_report_review_without_number_does_not_invent_zero() {
+        let state = test_state();
+        let response = dispatch(
+            r#"{"id":1,"method":"workspace.report_review","params":{"label":"MR","state":"open","title":"Needs review"}}"#,
+            &state,
+        );
+
+        assert!(response.ok, "{response:?}");
+        assert!(response.result.as_ref().unwrap()["pr"]["number"].is_null());
+
+        let tm = lock_or_recover(&state.tab_manager);
+        let workspace = tm.selected().unwrap();
+        assert_eq!(
+            workspace.pr_metadata.as_ref().and_then(|pr| pr.number),
+            None
+        );
     }
 }

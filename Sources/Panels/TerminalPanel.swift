@@ -16,12 +16,6 @@ final class TerminalPanel: Panel, ObservableObject {
     /// The workspace ID this panel belongs to
     private(set) var workspaceId: UUID
 
-    /// Published title from the terminal process
-    @Published private(set) var title: String = "Terminal"
-
-    /// Published directory from the terminal
-    @Published private(set) var directory: String = ""
-
     /// Search state for find functionality
     @Published var searchState: TerminalSurface.SearchState? {
         didSet {
@@ -39,7 +33,7 @@ final class TerminalPanel: Panel, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     var displayTitle: String {
-        title.isEmpty ? "Terminal" : title
+        "Terminal"
     }
 
     var displayIcon: String? {
@@ -104,20 +98,6 @@ final class TerminalPanel: Panel, ObservableObject {
         )
         surface.portOrdinal = portOrdinal
         self.init(workspaceId: workspaceId, surface: surface)
-    }
-
-    func updateTitle(_ newTitle: String) {
-        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty && title != trimmed {
-            title = trimmed
-        }
-    }
-
-    func updateDirectory(_ newDirectory: String) {
-        let trimmed = newDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty && directory != trimmed {
-            directory = trimmed
-        }
     }
 
     func updateWorkspaceId(_ newWorkspaceId: UUID) {

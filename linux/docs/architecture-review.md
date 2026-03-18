@@ -138,24 +138,23 @@ Recommendation:
 - split the Ghostty renderer fix into its own branch/PR if it is not already isolated
 - make the `cmux-linux` PR explicitly depend on that Ghostty change
 
-### P2: UI event delivery still uses 33ms polling
+### P2: Linked Ghostty builds are still network-coupled
 
-[window.rs](../cmux/src/ui/window.rs) still uses:
+The current Linux build still depends on Ghostty's Zig dependency resolution reaching
+external artifact hosts during the build.
 
-- `std::sync::mpsc`
-- `try_recv()`
-- `glib::timeout_add_local(Duration::from_millis(33), ...)`
+That is acceptable for development and not acceptable as the long-term CI/release story.
 
-This is acceptable for MVP because the product value is already visible.
-It is still architectural debt:
+Risk:
 
-- avoidable idle polling
-- avoidable latency
-- extra glue around the GTK main loop
+- flaky CI from external fetch timeouts
+- non-reproducible linked builds
+- harder debugging when build failures are network-induced rather than code-induced
 
 Recommendation:
 
-- move to `glib::MainContext::channel()` or `gio`-native socket integration later
+- make linked Linux builds use an explicit cache or vendored dependency strategy
+- treat remote fetches during core build steps as build debt, not normal behavior
 
 ### P2: Focus recovery is intentionally heuristic
 

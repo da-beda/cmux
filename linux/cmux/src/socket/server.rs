@@ -54,9 +54,7 @@ pub async fn run_socket_server(state: Arc<SharedState>) -> anyhow::Result<()> {
     let server_pid = std::process::id();
     tracing::info!("Socket control mode: {:?}", control_mode);
     if control_mode == auth::SocketControlMode::CmuxOnly {
-        tracing::info!(
-            "CmuxOnly mode: same-UID + descendant-PID check via /proc enabled"
-        );
+        tracing::info!("CmuxOnly mode: same-UID + descendant-PID check via /proc enabled");
     }
 
     let path = socket_path();

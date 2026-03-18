@@ -749,25 +749,20 @@ class TabManager: ObservableObject {
                 "to=\(Self.debugShortWorkspaceId(selectedTabId)) dt=\(Self.debugMsText(switchDtMs))"
             )
 #endif
-            selectionSideEffectsGeneration &+= 1
-            let generation = selectionSideEffectsGeneration
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.selectionSideEffectsGeneration == generation else { return }
-                self.focusSelectedTabPanel(previousTabId: previousTabId)
-                self.updateWindowTitleForSelectedTab()
-                if let selectedTabId = self.selectedTabId {
-                    self.markFocusedPanelReadIfActive(tabId: selectedTabId)
-                }
-#if DEBUG
-                let dtMs = self.debugWorkspaceSwitchStartTime > 0
-                    ? (CACurrentMediaTime() - self.debugWorkspaceSwitchStartTime) * 1000
-                    : 0
-                dlog(
-                    "ws.select.asyncDone id=\(self.debugWorkspaceSwitchId) dt=\(Self.debugMsText(dtMs)) " +
-                    "selected=\(Self.debugShortWorkspaceId(self.selectedTabId))"
-                )
-#endif
+            focusSelectedTabPanel(previousTabId: previousTabId)
+            updateWindowTitleForSelectedTab()
+            if let selectedTabId {
+                markFocusedPanelReadIfActive(tabId: selectedTabId)
             }
+#if DEBUG
+            let dtMs = debugWorkspaceSwitchStartTime > 0
+                ? (CACurrentMediaTime() - debugWorkspaceSwitchStartTime) * 1000
+                    : 0
+            dlog(
+                "ws.select.syncDone id=\(debugWorkspaceSwitchId) dt=\(Self.debugMsText(dtMs)) " +
+                    "selected=\(Self.debugShortWorkspaceId(selectedTabId))"
+            )
+#endif
         }
     }
     private var observers: [NSObjectProtocol] = []
@@ -792,7 +787,6 @@ class TabManager: ObservableObject {
     private var historyIndex: Int = -1
     private var isNavigatingHistory = false
     private let maxHistorySize = 50
-    private var selectionSideEffectsGeneration: UInt64 = 0
     private var workspaceCycleGeneration: UInt64 = 0
     private var workspaceCycleCooldownTask: Task<Void, Never>?
     private var pendingWorkspaceUnfocusTarget: (tabId: UUID, panelId: UUID)?
@@ -2807,16 +2801,6 @@ class TabManager: ObservableObject {
         }
     }
 
-    func focusedSurfaceTitleDidChange(tabId: UUID) {
-        guard let tab = tabs.first(where: { $0.id == tabId }),
-              let focusedPanelId = tab.focusedPanelId,
-              let title = tab.panelTitles[focusedPanelId] else { return }
-        tab.applyProcessTitle(title)
-        if selectedTabId == tabId {
-            updateWindowTitle(for: tab)
-        }
-    }
-
     private func updateWindowTitleForSelectedTab() {
         guard let selectedTabId,
               let tab = tabs.first(where: { $0.id == selectedTabId }) else {
@@ -2828,8 +2812,15 @@ class TabManager: ObservableObject {
 
     private func updateWindowTitle(for tab: Workspace?) {
         let title = windowTitle(for: tab)
-        guard let targetWindow = window else { return }
-        targetWindow.title = title
+        window?.title = title
+        NotificationCenter.default.post(
+            name: .workspaceDisplayTitleDidChange,
+            object: self,
+            userInfo: [
+                GhosttyNotificationKey.tabId: selectedTabId as Any,
+                GhosttyNotificationKey.title: title
+            ]
+        )
     }
 
     private func windowTitle(for tab: Workspace?) -> String {
@@ -2845,7 +2836,7 @@ class TabManager: ObservableObject {
     func focusTab(_ tabId: UUID, surfaceId: UUID? = nil, suppressFlash: Bool = false) {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return }
         if let surfaceId, tab.panels[surfaceId] != nil {
-            // Keep selected-surface intent stable across selectedTabId didSet async restore.
+            // Keep selected-surface intent stable across selectedTabId side-effect restore.
             lastFocusedPanelByTab[tabId] = surfaceId
         }
 #if DEBUG
@@ -4922,7 +4913,6 @@ extension TabManager {
         workspaceCycleCooldownTask?.cancel()
         workspaceCycleCooldownTask = nil
         isWorkspaceCycleHot = false
-        selectionSideEffectsGeneration &+= 1
         recentlyClosedBrowsers = RecentlyClosedBrowserStack(capacity: 20)
 
         // Build the new workspace list locally to avoid intermediate @Published
@@ -5032,6 +5022,7 @@ extension Notification.Name {
     static let ghosttyDidSetTitle = Notification.Name("ghosttyDidSetTitle")
     static let ghosttyDidFocusTab = Notification.Name("ghosttyDidFocusTab")
     static let ghosttyDidFocusSurface = Notification.Name("ghosttyDidFocusSurface")
+    static let workspaceDisplayTitleDidChange = Notification.Name("cmux.workspaceDisplayTitleDidChange")
     static let ghosttyDidBecomeFirstResponderSurface = Notification.Name("ghosttyDidBecomeFirstResponderSurface")
     static let browserDidBecomeFirstResponderWebView = Notification.Name("browserDidBecomeFirstResponderWebView")
     static let browserFocusAddressBar = Notification.Name("browserFocusAddressBar")

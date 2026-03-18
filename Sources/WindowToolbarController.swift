@@ -32,7 +32,7 @@ final class WindowToolbarController: NSObject, NSToolbarDelegate {
     private func installObservers() {
         let center = NotificationCenter.default
         observers.append(center.addObserver(
-            forName: .ghosttyDidSetTitle,
+            forName: .workspaceDisplayTitleDidChange,
             object: nil,
             queue: .main
         ) { [weak self] _ in
