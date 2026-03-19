@@ -11,6 +11,25 @@ cargo build          # Debug build
 cargo build --release # Release build
 ```
 
+Recommended Linux Docker path:
+
+```bash
+./scripts/linux-linked-check.sh
+./scripts/linux-docker.sh 'cd linux && cargo check --tests'
+./scripts/linux-docker.sh 'cd linux && cargo check --tests --features cmux/link-ghostty'
+./scripts/linux-docker.sh './scripts/linux-ci-smoke.sh'
+./scripts/linux-docker.sh './scripts/linux-session-restore-smoke.sh'
+```
+
+`./scripts/linux-linked-check.sh` is the shortest end-to-end linked Ghostty
+verification path.
+
+`./scripts/linux-docker.sh` is the general-purpose helper. It mounts persistent
+Cargo and Ghostty Zig caches under `.cache/`, installs the GTK/linker dependencies,
+and seeds the Ghostty Zig cache before running your command. It is the recommended
+way to avoid repeated live fetches from `deps.files.ghostty.org` during linked
+Ghostty builds.
+
 ## Architecture
 
 - `ghostty-sys/` — Raw FFI bindings to libghostty C API (`ghostty.h`)
@@ -24,7 +43,8 @@ cargo build --release # Release build
 
 The Linux MVP is terminal-only. Browser-panel placeholders are intentionally absent.
 The Linux app and CLI are local-only: they do not include remote telemetry, analytics,
-or crash-reporting SDKs. The `report_*` socket commands update local workspace metadata only.
+or crash-reporting SDKs. The `report_*` and `clear_*` socket commands update local workspace
+metadata only.
 
 ## Architecture Review
 
@@ -39,6 +59,29 @@ Without it (default), the crates compile in stub mode for development.
 To build with ghostty:
 1. Initialize the ghostty submodule
 2. Build with `cargo build --features cmux/link-ghostty`
+
+If linked Ghostty builds are flaky because Zig keeps fetching from
+`deps.files.ghostty.org`, use Ghostty's upstream offline-cache flow once and
+then point `ghostty-sys` at that cache:
+
+```bash
+./scripts/prepare-ghostty-zig-cache.sh
+export CMUX_GHOSTTY_ZIG_GLOBAL_CACHE_DIR="$PWD/.cache/ghostty-zig"
+cargo check --features cmux/link-ghostty
+```
+
+`linux/ghostty-sys/build.rs` now respects:
+- `CMUX_GHOSTTY_ZIG_GLOBAL_CACHE_DIR`
+- `CMUX_GHOSTTY_ZIG_SYSTEM_DIR`
+
+`CMUX_GHOSTTY_ZIG_GLOBAL_CACHE_DIR` is the normal cmux setting: it reuses a
+prefetched Zig cache without switching Ghostty into packager-style system
+library linking.
+
+`CMUX_GHOSTTY_ZIG_SYSTEM_DIR` is an explicit advanced override for Ghostty's
+`zig build --system ...` mode. That is useful for distro-style packaging, but it
+can change dependency linking behavior and is not the recommended default for
+cmux's embedded `libghostty` build.
 
 ## Socket Protocol
 

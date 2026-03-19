@@ -222,6 +222,12 @@ main() {
 
   mkdir -p "$OUT_DIR" "$REPO_ROOT/tmp"
   rm -f "$OUT_DIR"/linux_port_ghostty_*.png "$OUT_DIR"/linux_port_ghostty_*.mp4 "$APP_LOG"
+  if command -v zig >/dev/null 2>&1; then
+    local ghostty_cache_dir
+    ghostty_cache_dir="${CMUX_GHOSTTY_ZIG_GLOBAL_CACHE_DIR:-$REPO_ROOT/.cache/ghostty-zig}"
+    "$SCRIPT_DIR/prepare-ghostty-zig-cache.sh" "$ghostty_cache_dir" >/dev/null
+    export CMUX_GHOSTTY_ZIG_GLOBAL_CACHE_DIR="$ghostty_cache_dir"
+  fi
   cargo build --features cmux/link-ghostty --manifest-path "$LINUX_DIR/Cargo.toml" >/dev/null
 
   "$SCREENSHOT_KIT_DIR/display-setup.sh" "$DISPLAY_NUM" "1920x1080x24" start >/dev/null

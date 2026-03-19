@@ -33,19 +33,32 @@ fn main() {
             )
         });
 
+    let zig_global_cache_dir =
+        env::var_os("CMUX_GHOSTTY_ZIG_GLOBAL_CACHE_DIR").map(PathBuf::from);
+    let zig_system_dir = env::var_os("CMUX_GHOSTTY_ZIG_SYSTEM_DIR").map(PathBuf::from);
+
     // Build libghostty as a static library using zig build
     let output_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let install_dir = output_dir.join("ghostty-install");
 
-    let status = Command::new("zig")
+    let mut zig_build = Command::new("zig");
+    zig_build
         .arg("build")
         .arg("-Dapp-runtime=none") // none = libghostty (embedded runtime)
         .arg("-Doptimize=ReleaseFast")
         .arg("-Demit-terminfo=true")
         .arg("--prefix")
         .arg(install_dir.as_os_str())
-        .current_dir(&ghostty_dir)
+        .current_dir(&ghostty_dir);
+    if let Some(path) = zig_global_cache_dir.as_ref() {
+        zig_build.env("ZIG_GLOBAL_CACHE_DIR", path);
+    }
+    if let Some(path) = zig_system_dir.as_ref() {
+        zig_build.arg("--system").arg(path);
+    }
+
+    let status = zig_build
         .status()
         .expect("Failed to run zig build. Is zig installed?");
 
@@ -80,7 +93,8 @@ pub fn main() !void {
 
     let build_data_exe = output_dir.join("ghostty-terminfo");
     let ghostty_terminfo_module = ghostty_dir.join("src").join("terminfo").join("ghostty.zig");
-    let status = Command::new("zig")
+    let mut zig_build_exe = Command::new("zig");
+    zig_build_exe
         .arg("build-exe")
         .arg("--dep")
         .arg("ghostty_terminfo")
@@ -91,7 +105,12 @@ pub fn main() !void {
         ))
         .arg("-O")
         .arg("ReleaseFast")
-        .arg(format!("-femit-bin={}", build_data_exe.display()))
+        .arg(format!("-femit-bin={}", build_data_exe.display()));
+    if let Some(path) = zig_global_cache_dir.as_ref() {
+        zig_build_exe.env("ZIG_GLOBAL_CACHE_DIR", path);
+    }
+
+    let status = zig_build_exe
         .status()
         .expect("Failed to build ghostty-build-data helper");
 
@@ -157,6 +176,8 @@ pub fn main() !void {
     // Rerun if ghostty source changes or feature flag changes
     println!("cargo:rerun-if-changed={}", ghostty_dir.display());
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LINK_GHOSTTY");
+    println!("cargo:rerun-if-env-changed=CMUX_GHOSTTY_ZIG_GLOBAL_CACHE_DIR");
+    println!("cargo:rerun-if-env-changed=CMUX_GHOSTTY_ZIG_SYSTEM_DIR");
 }
 
 fn copy_runtime_libraries(lib_dir: &std::path::Path, destinations: &[&std::path::Path]) {

@@ -47,3 +47,11 @@ tests/visual_report.html
 # Local scratch (screenshots, etc.)
 tmp/
 tmp-*/
+
+# Local Linux build caches
+.cache/cargo/
+.cache/ghostty-zig/
+
+# Local Linux bundle artifacts
+linux/dist-debug/
+linux/dist-debug.tar.gz
