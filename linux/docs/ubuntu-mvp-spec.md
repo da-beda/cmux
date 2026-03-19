@@ -63,8 +63,8 @@ As a user, I can jump to the latest unread workspace and see which pane or surfa
 Each workspace row should show the minimum context needed to make routing decisions:
 
 - workspace title,
-- agent or status label when available,
-- git branch or working directory,
+- latest local runtime context when available, such as shell state, PR summary, git branch,
+  working directory, listening ports, or compact metadata,
 - latest notification text,
 - unread indicator.
 
@@ -87,8 +87,6 @@ Each workspace row should show the minimum context needed to make routing decisi
 The following are explicitly out of scope for the current Linux implementation:
 
 - browser panels or any in-app browser surface,
-- pull request metadata,
-- listening ports,
 - advanced progress visualizations,
 - rich notification history UI,
 - drag-and-drop workspace management,

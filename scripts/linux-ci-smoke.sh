@@ -86,7 +86,27 @@ echo "$AFTER_NEW_JSON" | jq -e '
   | map(select(.selected == true))[0].title == "Smoke"
 ' >/dev/null
 
-"$TARGET_DIR/cmux" --socket "$SOCKET_PATH" pane new --orientation vertical >/dev/null
+PANE_NEW_JSON="$("$TARGET_DIR/cmux" --socket "$SOCKET_PATH" --json pane new --orientation vertical)"
+SECOND_PANE_ID="$(echo "$PANE_NEW_JSON" | jq -r '.result.pane_id')"
+SECOND_SURFACE_ID="$(echo "$PANE_NEW_JSON" | jq -r '.result.surface')"
+echo "$PANE_NEW_JSON" | jq -e '.result.pane_id | type == "string"' >/dev/null
+echo "$PANE_NEW_JSON" | jq -e '.result.surface | type == "string"' >/dev/null
+
+PANE_FOCUS_JSON="$("$TARGET_DIR/cmux" --socket "$SOCKET_PATH" --json pane focus --pane "$SECOND_PANE_ID")"
+echo "$PANE_FOCUS_JSON" | jq -e '
+  .result.focused == true and .result.pane_id == "'"$SECOND_PANE_ID"'"
+' >/dev/null
+
+PANE_RESIZE_JSON="$("$TARGET_DIR/cmux" --socket "$SOCKET_PATH" --json pane resize --pane "$SECOND_PANE_ID" --direction down --step 0.1)"
+echo "$PANE_RESIZE_JSON" | jq -e '
+  .result.resized == true and .result.pane_id == "'"$SECOND_PANE_ID"'" and .result.direction == "down"
+' >/dev/null
+
+SURFACE_NEXT_JSON="$("$TARGET_DIR/cmux" --socket "$SOCKET_PATH" --json surface next --pane "$SECOND_PANE_ID")"
+echo "$SURFACE_NEXT_JSON" | jq -e '
+  .result.focused == true and .result.pane_id == "'"$SECOND_PANE_ID"'" and .result.surface == "'"$SECOND_SURFACE_ID"'"
+' >/dev/null
+
 "$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace report-git-branch --branch smoke-main --dirty >/dev/null
 "$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace report-pwd --path "$REPO_ROOT/linux" >/dev/null
 "$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace report-shell-state --state running --label "cargo test" >/dev/null
@@ -120,6 +140,45 @@ echo "$AFTER_SPLIT_JSON" | jq -e '
 echo "$AFTER_SPLIT_JSON" | jq -e '
   .result.workspaces
   | map(select(.selected == true))[0].meta_items[0].key == "task"
+' >/dev/null
+
+"$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace clear-pwd >/dev/null
+"$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace clear-shell-state >/dev/null
+"$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace clear-tty >/dev/null
+"$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace clear-meta --key task >/dev/null
+"$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace clear-meta-block --key notes >/dev/null
+
+AFTER_CLEAR_JSON="$("$TARGET_DIR/cmux" --socket "$SOCKET_PATH" --json workspace list)"
+echo "$AFTER_CLEAR_JSON" | jq -e '
+  .result.workspaces
+  | map(select(.selected == true))[0].directory == "'"$REPO_ROOT"'"
+' >/dev/null
+echo "$AFTER_CLEAR_JSON" | jq -e '
+  .result.workspaces
+  | map(select(.selected == true))[0].shell_state == null
+' >/dev/null
+echo "$AFTER_CLEAR_JSON" | jq -e '
+  .result.workspaces
+  | map(select(.selected == true))[0].tty_name == null
+' >/dev/null
+echo "$AFTER_CLEAR_JSON" | jq -e '
+  .result.workspaces
+  | map(select(.selected == true))[0].meta_items == []
+' >/dev/null
+echo "$AFTER_CLEAR_JSON" | jq -e '
+  .result.workspaces
+  | map(select(.selected == true))[0].meta_blocks == []
+' >/dev/null
+
+PANE_CLOSE_JSON="$("$TARGET_DIR/cmux" --socket "$SOCKET_PATH" --json pane close --pane "$SECOND_PANE_ID")"
+echo "$PANE_CLOSE_JSON" | jq -e '
+  .result.closed == true and .result.pane_id == "'"$SECOND_PANE_ID"'" and (.result.removed_surfaces | length) >= 1
+' >/dev/null
+
+AFTER_CLOSE_JSON="$("$TARGET_DIR/cmux" --socket "$SOCKET_PATH" --json workspace list)"
+echo "$AFTER_CLOSE_JSON" | jq -e '
+  .result.workspaces
+  | map(select(.selected == true))[0].panel_count == 1
 ' >/dev/null
 
 "$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace rename --title "Smoke Renamed" >/dev/null

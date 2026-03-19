@@ -17,8 +17,8 @@ use serde_json::Value;
 
 use crate::app::{lock_or_recover, SharedState, UiEvent};
 use crate::model::panel::{
-    GitBranch, MetadataBlock, MetadataFormat, MetadataItem, PullRequestChecks, PullRequestMetadata,
-    PullRequestState, ShellActivityState, SplitOrientation,
+    FocusDirection, GitBranch, MetadataBlock, MetadataFormat, MetadataItem, PullRequestChecks,
+    PullRequestMetadata, PullRequestState, ShellActivityState, SplitOrientation,
 };
 use crate::model::Workspace;
 
@@ -106,28 +106,39 @@ pub fn dispatch(json_line: &str, state: &Arc<SharedState>) -> Response {
         "workspace.report_git_branch" => handle_workspace_report_git(id, &req.params, state),
         "workspace.clear_git_branch" => handle_workspace_clear_git(id, &req.params, state),
         "workspace.report_pwd" => handle_workspace_report_pwd(id, &req.params, state),
+        "workspace.clear_pwd" => handle_workspace_clear_pwd(id, &req.params, state),
         "workspace.report_shell_state" => {
             handle_workspace_report_shell_state(id, &req.params, state)
         }
+        "workspace.clear_shell_state" => handle_workspace_clear_shell_state(id, &req.params, state),
         "workspace.report_ports" => handle_workspace_report_ports(id, &req.params, state),
         "workspace.clear_ports" => handle_workspace_clear_ports(id, &req.params, state),
         "workspace.report_tty" => handle_workspace_report_tty(id, &req.params, state),
+        "workspace.clear_tty" => handle_workspace_clear_tty(id, &req.params, state),
         "workspace.report_pr" => handle_workspace_report_pr(id, &req.params, state),
         "workspace.report_review" => handle_workspace_report_review(id, &req.params, state),
         "workspace.clear_pr" => handle_workspace_clear_pr(id, &req.params, state),
         "workspace.report_meta" => handle_workspace_report_meta(id, &req.params, state),
         "workspace.report_meta_block" => handle_workspace_report_meta_block(id, &req.params, state),
+        "workspace.clear_meta" => handle_workspace_clear_meta(id, &req.params, state),
+        "workspace.clear_meta_block" => handle_workspace_clear_meta_block(id, &req.params, state),
         "workspace.set_progress" => handle_workspace_set_progress(id, &req.params, state),
         "workspace.append_log" => handle_workspace_append_log(id, &req.params, state),
 
         // Pane commands
         "pane.new" => handle_pane_new(id, &req.params, state),
         "pane.focus" => handle_pane_focus(id, &req.params, state),
+        "pane.close" => handle_pane_close(id, &req.params, state),
+        "pane.resize" => handle_pane_resize(id, &req.params, state),
 
         // Surface commands
         "surface.send_input" => handle_surface_send_input(id, &req.params, state),
         "surface.focus" => handle_surface_focus(id, &req.params, state),
         "surface.close" => handle_surface_close(id, &req.params, state),
+        "surface.next" => handle_surface_cycle(id, &req.params, state, true),
+        "surface.previous" => handle_surface_cycle(id, &req.params, state, false),
+        "surface.move_forward" => handle_surface_move(id, &req.params, state, true),
+        "surface.move_backward" => handle_surface_move(id, &req.params, state, false),
 
         // Notification commands
         "notification.create" => handle_notification_create(id, &req.params, state),
@@ -169,22 +180,33 @@ fn handle_capabilities(id: Value) -> Response {
         "workspace.report_git_branch",
         "workspace.clear_git_branch",
         "workspace.report_pwd",
+        "workspace.clear_pwd",
         "workspace.report_shell_state",
+        "workspace.clear_shell_state",
         "workspace.report_ports",
         "workspace.clear_ports",
         "workspace.report_tty",
+        "workspace.clear_tty",
         "workspace.report_pr",
         "workspace.report_review",
         "workspace.clear_pr",
         "workspace.report_meta",
         "workspace.report_meta_block",
+        "workspace.clear_meta",
+        "workspace.clear_meta_block",
         "workspace.set_progress",
         "workspace.append_log",
         "pane.new",
         "pane.focus",
+        "pane.close",
+        "pane.resize",
         "surface.send_input",
         "surface.focus",
         "surface.close",
+        "surface.next",
+        "surface.previous",
+        "surface.move_forward",
+        "surface.move_backward",
         "notification.create",
     ];
     Response::success(id, serde_json::json!({"methods": methods}))
@@ -707,6 +729,32 @@ fn handle_workspace_report_pwd(id: Value, params: &Value, state: &Arc<SharedStat
     )
 }
 
+fn handle_workspace_clear_pwd(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+
+    let result = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let workspace = tm.workspace_mut(target.workspace_id).unwrap();
+        workspace.clear_panel_directory(target.panel_id).unwrap()
+    };
+
+    if result.changed() {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "cleared": result.removed,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+        }),
+    )
+}
+
 fn handle_workspace_report_shell_state(
     id: Value,
     params: &Value,
@@ -752,6 +800,36 @@ fn handle_workspace_report_shell_state(
                 state: shell_state,
                 label: label.map(|value| value.to_string()),
             }),
+        }),
+    )
+}
+
+fn handle_workspace_clear_shell_state(
+    id: Value,
+    params: &Value,
+    state: &Arc<SharedState>,
+) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+
+    let result = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let workspace = tm.workspace_mut(target.workspace_id).unwrap();
+        workspace.clear_panel_shell_state(target.panel_id).unwrap()
+    };
+
+    if result.changed() {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "cleared": result.removed,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
         }),
     )
 }
@@ -851,6 +929,32 @@ fn handle_workspace_report_tty(id: Value, params: &Value, state: &Arc<SharedStat
             "workspace_id": target.workspace_id.to_string(),
             "surface": target.panel_id.to_string(),
             "tty_name": crate::model::workspace::truncate_str(tty_name, 512),
+        }),
+    )
+}
+
+fn handle_workspace_clear_tty(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+
+    let result = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let workspace = tm.workspace_mut(target.workspace_id).unwrap();
+        workspace.clear_panel_tty(target.panel_id).unwrap()
+    };
+
+    if result.changed() {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "cleared": result.removed,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
         }),
     )
 }
@@ -1003,6 +1107,39 @@ fn handle_workspace_report_meta(id: Value, params: &Value, state: &Arc<SharedSta
     )
 }
 
+fn handle_workspace_clear_meta(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let key = match parse_metadata_key(&id, params) {
+        Ok(key) => key,
+        Err(response) => return response,
+    };
+
+    let result = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let workspace = tm.workspace_mut(target.workspace_id).unwrap();
+        workspace
+            .clear_panel_metadata_item(target.panel_id, &key)
+            .unwrap()
+    };
+
+    if result.changed() {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "cleared": result.removed,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+            "key": key,
+        }),
+    )
+}
+
 fn handle_workspace_report_meta_block(
     id: Value,
     params: &Value,
@@ -1034,6 +1171,43 @@ fn handle_workspace_report_meta_block(
             "workspace_id": target.workspace_id.to_string(),
             "surface": target.panel_id.to_string(),
             "block": metadata_block_json(&block),
+        }),
+    )
+}
+
+fn handle_workspace_clear_meta_block(
+    id: Value,
+    params: &Value,
+    state: &Arc<SharedState>,
+) -> Response {
+    let target = match resolve_report_target(&id, params, state) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let key = match parse_metadata_key(&id, params) {
+        Ok(key) => key,
+        Err(response) => return response,
+    };
+
+    let result = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let workspace = tm.workspace_mut(target.workspace_id).unwrap();
+        workspace
+            .clear_panel_metadata_block(target.panel_id, &key)
+            .unwrap()
+    };
+
+    if result.changed() {
+        state.notify_ui_refresh();
+    }
+    Response::success(
+        id,
+        serde_json::json!({
+            "ok": true,
+            "cleared": result.removed,
+            "workspace_id": target.workspace_id.to_string(),
+            "surface": target.panel_id.to_string(),
+            "key": key,
         }),
     )
 }
@@ -1131,9 +1305,17 @@ fn handle_pane_new(id: Value, params: &Value, state: &Arc<SharedState>) -> Respo
     let mut tm = lock_or_recover(&state.tab_manager);
     if let Some(ws) = tm.selected_mut() {
         let panel_id = ws.split(orientation);
+        let pane_id = ws.focused_pane_id;
         drop(tm);
         state.notify_ui_refresh();
-        Response::success(id, serde_json::json!({"panel_id": panel_id.to_string()}))
+        Response::success(
+            id,
+            serde_json::json!({
+                "panel_id": panel_id.to_string(),
+                "surface": panel_id.to_string(),
+                "pane_id": pane_id.map(|id| id.to_string()),
+            }),
+        )
     } else {
         Response::error(id, "not_found", "No workspace selected")
     }
@@ -1150,14 +1332,23 @@ fn handle_pane_focus(id: Value, params: &Value, state: &Arc<SharedState>) -> Res
 
     let focused = {
         let mut tm = lock_or_recover(&state.tab_manager);
+        let Some(selected_workspace_id) = tm.selected_id() else {
+            return Response::error(id, "not_found", "No workspace selected");
+        };
         let workspace_id = match tm
             .find_workspace_with_pane(pane_id)
             .map(|workspace| workspace.id)
         {
-            Some(workspace_id) => workspace_id,
+            Some(workspace_id) if workspace_id == selected_workspace_id => workspace_id,
+            Some(_) => {
+                return Response::error(
+                    id,
+                    "invalid_params",
+                    "Pane belongs to a different workspace",
+                )
+            }
             None => return Response::error(id, "not_found", "Pane not found"),
         };
-        let _ = tm.select_by_id(workspace_id);
         let workspace = tm.workspace_mut(workspace_id).unwrap();
         if workspace.focus_pane(pane_id) {
             let panel_id = workspace.focused_surface_id();
@@ -1173,7 +1364,7 @@ fn handle_pane_focus(id: Value, params: &Value, state: &Arc<SharedState>) -> Res
         if let Some(panel_id) = panel_id {
             let _ = state.send_ui_event(UiEvent::FocusSurface {
                 panel_id,
-                present_window: true,
+                present_window: false,
             });
         }
         Response::success(
@@ -1187,6 +1378,106 @@ fn handle_pane_focus(id: Value, params: &Value, state: &Arc<SharedState>) -> Res
         )
     } else {
         Response::error(id, "not_found", "Pane not found")
+    }
+}
+
+fn handle_pane_close(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let pane_id = match parse_uuid_param(params, "pane")
+        .or_else(|_| parse_uuid_param(params, "pane_id"))
+    {
+        Ok(Some(pane_id)) => pane_id,
+        Ok(None) => return Response::error(id, "invalid_params", "Provide 'pane' or 'pane_id'"),
+        Err(()) => return Response::error(id, "invalid_params", "Invalid pane UUID"),
+    };
+
+    let result = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let workspace_id = match tm
+            .find_workspace_with_pane(pane_id)
+            .map(|workspace| workspace.id)
+        {
+            Some(workspace_id) => workspace_id,
+            None => return Response::error(id, "not_found", "Pane not found"),
+        };
+        let workspace = tm.workspace_mut(workspace_id).unwrap();
+        workspace.close_pane(pane_id).map(|removed| {
+            (
+                workspace_id,
+                removed,
+                workspace.focused_pane_id,
+                workspace.focused_surface_id(),
+            )
+        })
+    };
+
+    if let Some((workspace_id, removed, focused_pane_id, focused_surface)) = result {
+        state.notify_ui_refresh();
+        Response::success(
+            id,
+            serde_json::json!({
+                "pane_id": pane_id.to_string(),
+                "workspace_id": workspace_id.to_string(),
+                "removed_surfaces": removed.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+                "focused_pane_id": focused_pane_id.map(|id| id.to_string()),
+                "focused_surface": focused_surface.map(|id| id.to_string()),
+                "closed": true,
+            }),
+        )
+    } else {
+        Response::error(id, "not_found", "Pane not found")
+    }
+}
+
+fn handle_pane_resize(id: Value, params: &Value, state: &Arc<SharedState>) -> Response {
+    let pane_id = match parse_uuid_param(params, "pane")
+        .or_else(|_| parse_uuid_param(params, "pane_id"))
+    {
+        Ok(Some(pane_id)) => pane_id,
+        Ok(None) => return Response::error(id, "invalid_params", "Provide 'pane' or 'pane_id'"),
+        Err(()) => return Response::error(id, "invalid_params", "Invalid pane UUID"),
+    };
+    let direction = match parse_focus_direction(&id, params.get("direction")) {
+        Ok(direction) => direction,
+        Err(response) => return response,
+    };
+    let step = match parse_step_param(&id, params, "step") {
+        Ok(step) => step.unwrap_or(0.05),
+        Err(response) => return response,
+    };
+
+    let result = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let workspace_id = match tm
+            .find_workspace_with_pane(pane_id)
+            .map(|workspace| workspace.id)
+        {
+            Some(workspace_id) => workspace_id,
+            None => return Response::error(id, "not_found", "Pane not found"),
+        };
+        let workspace = tm.workspace_mut(workspace_id).unwrap();
+        workspace
+            .resize_pane(pane_id, direction, step)
+            .then_some(workspace_id)
+    };
+
+    if let Some(workspace_id) = result {
+        state.notify_ui_refresh();
+        Response::success(
+            id,
+            serde_json::json!({
+                "pane_id": pane_id.to_string(),
+                "workspace_id": workspace_id.to_string(),
+                "direction": direction_label(direction),
+                "step": step,
+                "resized": true,
+            }),
+        )
+    } else {
+        Response::error(
+            id,
+            "invalid_params",
+            "Pane resize is invalid for the requested pane or direction",
+        )
     }
 }
 
@@ -1265,15 +1556,23 @@ fn handle_surface_focus(id: Value, params: &Value, state: &Arc<SharedState>) -> 
 
     let focused = {
         let mut tab_manager = lock_or_recover(&state.tab_manager);
+        let Some(selected_workspace_id) = tab_manager.selected_id() else {
+            return Response::error(id, "not_found", "No workspace selected");
+        };
         let workspace_id = match tab_manager
             .find_workspace_with_panel(panel_id)
             .map(|workspace| workspace.id)
         {
-            Some(workspace_id) => workspace_id,
+            Some(workspace_id) if workspace_id == selected_workspace_id => workspace_id,
+            Some(_) => {
+                return Response::error(
+                    id,
+                    "invalid_params",
+                    "Surface belongs to a different workspace",
+                )
+            }
             None => return Response::error(id, "not_found", "Surface not found"),
         };
-
-        let _ = tab_manager.select_by_id(workspace_id);
         let workspace = tab_manager.workspace_mut(workspace_id).unwrap();
         if workspace.focus_surface(panel_id) {
             Some((workspace_id, workspace.focused_pane_id))
@@ -1287,7 +1586,7 @@ fn handle_surface_focus(id: Value, params: &Value, state: &Arc<SharedState>) -> 
         state.notify_ui_refresh();
         let _ = state.send_ui_event(UiEvent::FocusSurface {
             panel_id,
-            present_window: true,
+            present_window: false,
         });
         Response::success(
             id,
@@ -1328,6 +1627,126 @@ fn handle_surface_close(id: Value, params: &Value, state: &Arc<SharedState>) -> 
             "closed": true,
         }),
     )
+}
+
+fn handle_surface_cycle(
+    id: Value,
+    params: &Value,
+    state: &Arc<SharedState>,
+    next: bool,
+) -> Response {
+    let pane_id =
+        match parse_uuid_param(params, "pane").or_else(|_| parse_uuid_param(params, "pane_id")) {
+            Ok(value) => value,
+            Err(()) => return Response::error(id, "invalid_params", "Invalid pane UUID"),
+        };
+
+    let focused = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let Some(selected_workspace_id) = tm.selected_id() else {
+            return Response::error(id, "not_found", "No workspace selected");
+        };
+        let Some(pane_id) = pane_id.or_else(|| {
+            tm.selected()
+                .and_then(|workspace| workspace.focused_pane_id)
+        }) else {
+            return Response::error(id, "not_found", "No focused pane");
+        };
+        match tm
+            .find_workspace_with_pane(pane_id)
+            .map(|workspace| workspace.id)
+        {
+            Some(workspace_id) if workspace_id == selected_workspace_id => {}
+            Some(_) => {
+                return Response::error(
+                    id,
+                    "invalid_params",
+                    "Pane belongs to a different workspace",
+                )
+            }
+            None => return Response::error(id, "not_found", "Pane not found"),
+        }
+        let workspace = tm.workspace_mut(selected_workspace_id).unwrap();
+        let panel_id = if next {
+            workspace.focus_next_surface_in_pane(pane_id)
+        } else {
+            workspace.focus_previous_surface_in_pane(pane_id)
+        };
+        panel_id.map(|panel_id| (selected_workspace_id, pane_id, panel_id))
+    };
+
+    if let Some((workspace_id, pane_id, panel_id)) = focused {
+        mark_workspace_read(state, workspace_id);
+        state.notify_ui_refresh();
+        let _ = state.send_ui_event(UiEvent::FocusSurface {
+            panel_id,
+            present_window: false,
+        });
+        Response::success(
+            id,
+            serde_json::json!({
+                "workspace_id": workspace_id.to_string(),
+                "pane_id": pane_id.to_string(),
+                "surface": panel_id.to_string(),
+                "focused": true,
+            }),
+        )
+    } else {
+        Response::error(id, "not_found", "No surface available in pane")
+    }
+}
+
+fn handle_surface_move(
+    id: Value,
+    params: &Value,
+    state: &Arc<SharedState>,
+    forward: bool,
+) -> Response {
+    let panel_id = match parse_surface_param(params) {
+        Ok(Some(panel_id)) => panel_id,
+        Ok(None) => {
+            let tm = lock_or_recover(&state.tab_manager);
+            let Some(workspace) = tm.selected() else {
+                return Response::error(id, "not_found", "No workspace selected");
+            };
+            let Some(panel_id) = workspace.focused_surface_id() else {
+                return Response::error(id, "not_found", "No focused surface");
+            };
+            panel_id
+        }
+        Err(()) => return Response::error(id, "invalid_params", "Invalid surface/panel UUID"),
+    };
+
+    let moved = {
+        let mut tm = lock_or_recover(&state.tab_manager);
+        let workspace = match tm.find_workspace_with_panel_mut(panel_id) {
+            Some(workspace) => workspace,
+            None => return Response::error(id, "not_found", "Surface not found"),
+        };
+        if forward {
+            workspace.move_surface_forward(panel_id)
+        } else {
+            workspace.move_surface_backward(panel_id)
+        }
+    };
+
+    if let Some(pane_id) = moved {
+        state.notify_ui_refresh();
+        Response::success(
+            id,
+            serde_json::json!({
+                "pane_id": pane_id.to_string(),
+                "surface": panel_id.to_string(),
+                "moved": true,
+            }),
+        )
+    } else {
+        Response::error(
+            id,
+            "invalid_params",
+            "Surface reorder is invalid for the requested surface",
+        )
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -1731,6 +2150,26 @@ fn parse_metadata_item(id: &Value, params: &Value) -> Result<MetadataItem, Respo
     })
 }
 
+fn parse_metadata_key(id: &Value, params: &Value) -> Result<String, Response> {
+    let Some(key) = params.get("key").and_then(|value| value.as_str()) else {
+        return Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Provide 'key'",
+        ));
+    };
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "'key' must not be empty",
+        ));
+    }
+
+    Ok(crate::model::workspace::truncate_str(key, 256).to_string())
+}
+
 fn parse_metadata_block(id: &Value, params: &Value) -> Result<MetadataBlock, Response> {
     let Some(key) = params.get("key").and_then(|value| value.as_str()) else {
         return Err(Response::error(
@@ -1853,9 +2292,47 @@ fn parse_usize_param(id: &Value, params: &Value, key: &str) -> Result<Option<usi
     }
 }
 
+fn parse_focus_direction(id: &Value, value: Option<&Value>) -> Result<FocusDirection, Response> {
+    match value.and_then(|value| value.as_str()) {
+        Some("left") => Ok(FocusDirection::Left),
+        Some("right") => Ok(FocusDirection::Right),
+        Some("up") => Ok(FocusDirection::Up),
+        Some("down") => Ok(FocusDirection::Down),
+        _ => Err(Response::error(
+            id.clone(),
+            "invalid_params",
+            "Invalid direction; expected 'left', 'right', 'up', or 'down'",
+        )),
+    }
+}
+
+fn parse_step_param(id: &Value, params: &Value, key: &str) -> Result<Option<f64>, Response> {
+    match params.get(key) {
+        Some(value) => match value.as_f64() {
+            Some(step) if step.is_finite() && step > 0.0 => Ok(Some(step)),
+            _ => Err(Response::error(
+                id.clone(),
+                "invalid_params",
+                &format!("'{key}' must be a positive finite number"),
+            )),
+        },
+        None => Ok(None),
+    }
+}
+
+fn direction_label(direction: FocusDirection) -> &'static str {
+    match direction {
+        FocusDirection::Left => "left",
+        FocusDirection::Right => "right",
+        FocusDirection::Up => "up",
+        FocusDirection::Down => "down",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::panel::{LayoutNode, Panel};
     use crate::model::TabManager;
 
     fn test_state() -> Arc<SharedState> {
@@ -2265,5 +2742,431 @@ mod tests {
             workspace.pr_metadata.as_ref().and_then(|pr| pr.number),
             None
         );
+    }
+
+    #[test]
+    fn test_capabilities_include_metadata_clear_methods() {
+        let response = handle_capabilities(serde_json::json!(1));
+        assert!(response.ok);
+        let result = response.result.unwrap();
+        let methods = result["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(methods.contains(&"workspace.clear_pwd"));
+        assert!(methods.contains(&"workspace.clear_shell_state"));
+        assert!(methods.contains(&"workspace.clear_tty"));
+        assert!(methods.contains(&"workspace.clear_meta"));
+        assert!(methods.contains(&"workspace.clear_meta_block"));
+    }
+
+    #[test]
+    fn test_clear_report_metadata_updates_workspace_summary() {
+        let state = test_state();
+        let (workspace_id, focused_panel_id, fallback_panel_id) = {
+            let mut tab_manager = lock_or_recover(&state.tab_manager);
+            let workspace = tab_manager.selected_mut().unwrap();
+            let fallback_panel_id = workspace.focused_panel_id.unwrap();
+            let _ = workspace.set_panel_directory(fallback_panel_id, "/tmp/cmux-fallback");
+            let focused_panel_id = workspace.split(SplitOrientation::Vertical);
+            let _ = workspace.focus_panel(focused_panel_id);
+            (workspace.id, focused_panel_id, fallback_panel_id)
+        };
+
+        let requests = [
+            serde_json::json!({
+                "id": 1,
+                "method": "workspace.report_pwd",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": focused_panel_id.to_string(),
+                    "path": "/tmp/cmux-active"
+                }
+            }),
+            serde_json::json!({
+                "id": 2,
+                "method": "workspace.report_shell_state",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": focused_panel_id.to_string(),
+                    "state": "running",
+                    "label": "cargo test"
+                }
+            }),
+            serde_json::json!({
+                "id": 3,
+                "method": "workspace.report_tty",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": focused_panel_id.to_string(),
+                    "tty_name": "pts/42"
+                }
+            }),
+            serde_json::json!({
+                "id": 4,
+                "method": "workspace.report_meta",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": focused_panel_id.to_string(),
+                    "key": "task",
+                    "label": "Task",
+                    "value": "review"
+                }
+            }),
+            serde_json::json!({
+                "id": 5,
+                "method": "workspace.report_meta_block",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": focused_panel_id.to_string(),
+                    "key": "notes",
+                    "title": "Notes",
+                    "content": "line one"
+                }
+            }),
+        ];
+
+        for request in requests {
+            let response = dispatch(&request.to_string(), &state);
+            assert!(response.ok, "{response:?}");
+        }
+
+        let clear_requests = [
+            serde_json::json!({
+                "id": 6,
+                "method": "workspace.clear_pwd",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": focused_panel_id.to_string()
+                }
+            }),
+            serde_json::json!({
+                "id": 7,
+                "method": "workspace.clear_shell_state",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": focused_panel_id.to_string()
+                }
+            }),
+            serde_json::json!({
+                "id": 8,
+                "method": "workspace.clear_tty",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": focused_panel_id.to_string()
+                }
+            }),
+            serde_json::json!({
+                "id": 9,
+                "method": "workspace.clear_meta",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": focused_panel_id.to_string(),
+                    "key": "task"
+                }
+            }),
+            serde_json::json!({
+                "id": 10,
+                "method": "workspace.clear_meta_block",
+                "params": {
+                    "workspace": workspace_id.to_string(),
+                    "surface": focused_panel_id.to_string(),
+                    "key": "notes"
+                }
+            }),
+        ];
+
+        for request in clear_requests {
+            let response = dispatch(&request.to_string(), &state);
+            assert!(response.ok, "{response:?}");
+            assert_eq!(
+                response.result.as_ref().unwrap()["cleared"],
+                serde_json::json!(true)
+            );
+        }
+
+        let tab_manager = lock_or_recover(&state.tab_manager);
+        let workspace = tab_manager.workspace(workspace_id).unwrap();
+        assert_eq!(workspace.current_directory, "/tmp/cmux-fallback");
+        assert_eq!(workspace.focused_panel_id, Some(focused_panel_id));
+        assert_eq!(
+            workspace
+                .panel(fallback_panel_id)
+                .and_then(|panel| panel.directory.as_deref()),
+            Some("/tmp/cmux-fallback")
+        );
+        assert!(workspace.shell_state.is_none());
+        assert!(workspace.tty_name.is_none());
+        assert!(workspace.metadata_items.is_empty());
+        assert!(workspace.metadata_blocks.is_empty());
+    }
+
+    #[test]
+    fn test_clear_meta_requires_non_empty_key() {
+        let state = test_state();
+        let response = dispatch(
+            r#"{"id":1,"method":"workspace.clear_meta","params":{"key":"   "}}"#,
+            &state,
+        );
+
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_ref().map(|error| error.code.as_str()),
+            Some("invalid_params")
+        );
+    }
+
+    #[test]
+    fn test_clear_meta_block_requires_key() {
+        let state = test_state();
+        let response = dispatch(
+            r#"{"id":1,"method":"workspace.clear_meta_block","params":{}}"#,
+            &state,
+        );
+
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_ref().map(|error| error.code.as_str()),
+            Some("invalid_params")
+        );
+    }
+
+    #[test]
+    fn test_clear_commands_report_false_when_metadata_already_absent() {
+        let state = test_state();
+        let response = dispatch(
+            r#"{"id":1,"method":"workspace.clear_shell_state","params":{}}"#,
+            &state,
+        );
+
+        assert!(response.ok, "{response:?}");
+        assert_eq!(
+            response.result.as_ref().unwrap()["cleared"],
+            serde_json::json!(false)
+        );
+    }
+
+    #[test]
+    fn test_clear_pwd_ignores_dangling_timestamp_without_claiming_clear() {
+        let state = test_state();
+        {
+            let mut tm = lock_or_recover(&state.tab_manager);
+            let workspace = tm.selected_mut().unwrap();
+            let panel_id = workspace.focused_panel_id.unwrap();
+            let panel = workspace.panel_mut(panel_id).unwrap();
+            panel.directory = None;
+            panel.directory_updated_at = Some(123.0);
+            workspace.current_directory = "/tmp/stale-summary".into();
+        }
+
+        let response = dispatch(
+            r#"{"id":1,"method":"workspace.clear_pwd","params":{}}"#,
+            &state,
+        );
+
+        assert!(response.ok, "{response:?}");
+        assert_eq!(
+            response.result.as_ref().unwrap()["cleared"],
+            serde_json::json!(false)
+        );
+        let tm = lock_or_recover(&state.tab_manager);
+        let workspace = tm.selected().unwrap();
+        assert_ne!(workspace.current_directory, "/tmp/stale-summary");
+    }
+
+    #[test]
+    fn test_capabilities_include_mux_control_methods() {
+        let response = handle_capabilities(serde_json::json!(1));
+        assert!(response.ok);
+        let result = response.result.unwrap();
+        let methods = result["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(methods.contains(&"pane.close"));
+        assert!(methods.contains(&"pane.resize"));
+        assert!(methods.contains(&"surface.next"));
+        assert!(methods.contains(&"surface.previous"));
+        assert!(methods.contains(&"surface.move_forward"));
+        assert!(methods.contains(&"surface.move_backward"));
+    }
+
+    #[test]
+    fn test_pane_close_removes_target_pane() {
+        let state = test_state();
+        let pane_id = {
+            let mut tm = lock_or_recover(&state.tab_manager);
+            let ws = tm.selected_mut().unwrap();
+            let panel_id = ws.split(SplitOrientation::Horizontal);
+            ws.layout.find_pane_id_with_panel(panel_id).unwrap()
+        };
+
+        let response = dispatch(
+            &serde_json::json!({
+                "id": 1,
+                "method": "pane.close",
+                "params": {"pane": pane_id.to_string()}
+            })
+            .to_string(),
+            &state,
+        );
+
+        assert!(response.ok, "{response:?}");
+        let tm = lock_or_recover(&state.tab_manager);
+        let ws = tm.selected().unwrap();
+        assert!(ws.layout.find_pane(pane_id).is_none());
+        assert_eq!(ws.panels.len(), 1);
+    }
+
+    #[test]
+    fn test_pane_resize_updates_layout() {
+        let state = test_state();
+        let pane_id = {
+            let mut tm = lock_or_recover(&state.tab_manager);
+            let ws = tm.selected_mut().unwrap();
+            let panel_id = ws.split(SplitOrientation::Horizontal);
+            ws.layout.find_pane_id_with_panel(panel_id).unwrap()
+        };
+
+        let response = dispatch(
+            &serde_json::json!({
+                "id": 1,
+                "method": "pane.resize",
+                "params": {"pane": pane_id.to_string(), "direction": "right", "step": 0.1}
+            })
+            .to_string(),
+            &state,
+        );
+
+        assert!(response.ok, "{response:?}");
+        let tm = lock_or_recover(&state.tab_manager);
+        let ws = tm.selected().unwrap();
+        match &ws.layout {
+            LayoutNode::Split {
+                divider_position, ..
+            } => assert_eq!(*divider_position, 0.6),
+            _ => panic!("expected split layout"),
+        }
+    }
+
+    #[test]
+    fn test_surface_move_forward_reorders_tabs() {
+        let state = test_state();
+        let panel_id = {
+            let mut tm = lock_or_recover(&state.tab_manager);
+            let ws = tm.selected_mut().unwrap();
+            let first = ws.focused_panel_id.unwrap();
+            let second = Panel::new();
+            let second_id = second.id;
+            ws.panels.insert(second_id, second);
+            let pane_id = ws.focused_pane_id.unwrap();
+            let pane = ws.layout.find_pane_mut(pane_id).unwrap();
+            pane.panel_ids.push(second_id);
+            pane.selected_panel_id = Some(first);
+            first
+        };
+
+        let response = dispatch(
+            &serde_json::json!({
+                "id": 1,
+                "method": "surface.move_forward",
+                "params": {"surface": panel_id.to_string()}
+            })
+            .to_string(),
+            &state,
+        );
+
+        assert!(response.ok, "{response:?}");
+        let tm = lock_or_recover(&state.tab_manager);
+        let ws = tm.selected().unwrap();
+        let pane = ws.layout.find_pane(ws.focused_pane_id.unwrap()).unwrap();
+        assert_eq!(pane.panel_ids[1], panel_id);
+    }
+
+    #[test]
+    fn test_pane_focus_rejects_cross_workspace_targets() {
+        let state = test_state();
+        let pane_id = {
+            let mut tm = lock_or_recover(&state.tab_manager);
+            let first_workspace_id = tm.selected_id().unwrap();
+            let second_workspace_id = tm.add_workspace(Workspace::new());
+            let workspace = tm.workspace(second_workspace_id).unwrap();
+            let pane_id = workspace.focused_pane_id.unwrap();
+            let _ = tm.select_by_id(first_workspace_id);
+            pane_id
+        };
+
+        let response = dispatch(
+            &serde_json::json!({
+                "id": 1,
+                "method": "pane.focus",
+                "params": {"pane": pane_id.to_string()}
+            })
+            .to_string(),
+            &state,
+        );
+
+        assert!(!response.ok);
+        assert_eq!(response.error.unwrap().code, "invalid_params");
+    }
+
+    #[test]
+    fn test_surface_focus_rejects_cross_workspace_targets() {
+        let state = test_state();
+        let panel_id = {
+            let mut tm = lock_or_recover(&state.tab_manager);
+            let first_workspace_id = tm.selected_id().unwrap();
+            let second_workspace_id = tm.add_workspace(Workspace::new());
+            let workspace = tm.workspace(second_workspace_id).unwrap();
+            let panel_id = workspace.focused_panel_id.unwrap();
+            let _ = tm.select_by_id(first_workspace_id);
+            panel_id
+        };
+
+        let response = dispatch(
+            &serde_json::json!({
+                "id": 1,
+                "method": "surface.focus",
+                "params": {"surface": panel_id.to_string()}
+            })
+            .to_string(),
+            &state,
+        );
+
+        assert!(!response.ok);
+        assert_eq!(response.error.unwrap().code, "invalid_params");
+    }
+
+    #[test]
+    fn test_surface_next_rejects_cross_workspace_pane() {
+        let state = test_state();
+        let pane_id = {
+            let mut tm = lock_or_recover(&state.tab_manager);
+            let first_workspace_id = tm.selected_id().unwrap();
+            let second_workspace_id = tm.add_workspace(Workspace::new());
+            let workspace = tm.workspace(second_workspace_id).unwrap();
+            let pane_id = workspace.focused_pane_id.unwrap();
+            let _ = tm.select_by_id(first_workspace_id);
+            pane_id
+        };
+
+        let response = dispatch(
+            &serde_json::json!({
+                "id": 1,
+                "method": "surface.next",
+                "params": {"pane": pane_id.to_string()}
+            })
+            .to_string(),
+            &state,
+        );
+
+        assert!(!response.ok);
+        assert_eq!(response.error.unwrap().code, "invalid_params");
     }
 }

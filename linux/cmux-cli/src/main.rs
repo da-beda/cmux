@@ -188,6 +188,13 @@ enum WorkspaceCommands {
         #[arg(long)]
         path: String,
     },
+    /// Clear current working directory metadata
+    ClearPwd {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+    },
     /// Report shell activity state
     ReportShellState {
         #[arg(long)]
@@ -198,6 +205,13 @@ enum WorkspaceCommands {
         state: String,
         #[arg(long)]
         label: Option<String>,
+    },
+    /// Clear shell activity state metadata
+    ClearShellState {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
     },
     /// Report listening ports
     ReportPorts {
@@ -223,6 +237,13 @@ enum WorkspaceCommands {
         surface: Option<String>,
         #[arg(long)]
         tty_name: String,
+    },
+    /// Clear TTY metadata
+    ClearTty {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
     },
     /// Report pull request metadata
     ReportPr {
@@ -294,6 +315,15 @@ enum WorkspaceCommands {
         #[arg(long)]
         format: Option<String>,
     },
+    /// Clear a compact generic metadata item by key
+    ClearMeta {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long)]
+        key: String,
+    },
     /// Report a freeform generic metadata block
     ReportMetaBlock {
         #[arg(long)]
@@ -312,6 +342,15 @@ enum WorkspaceCommands {
         priority: Option<i32>,
         #[arg(long)]
         format: Option<String>,
+    },
+    /// Clear a generic metadata block by key
+    ClearMetaBlock {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        surface: Option<String>,
+        #[arg(long)]
+        key: String,
     },
 }
 
@@ -335,6 +374,26 @@ enum SurfaceCommands {
         #[arg(long)]
         surface: String,
     },
+    /// Focus the next surface in a pane
+    Next {
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Focus the previous surface in a pane
+    Previous {
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Move a surface forward within its pane tab order
+    MoveForward {
+        #[arg(long)]
+        surface: Option<String>,
+    },
+    /// Move a surface backward within its pane tab order
+    MoveBackward {
+        #[arg(long)]
+        surface: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -349,6 +408,20 @@ enum PaneCommands {
     Focus {
         #[arg(long)]
         pane: String,
+    },
+    /// Close a pane and collapse its split
+    Close {
+        #[arg(long)]
+        pane: String,
+    },
+    /// Resize a pane by nudging the relevant divider
+    Resize {
+        #[arg(long)]
+        pane: String,
+        #[arg(long)]
+        direction: String,
+        #[arg(long)]
+        step: Option<f64>,
     },
 }
 
@@ -377,6 +450,12 @@ fn insert_optional_usize(
 }
 
 fn insert_optional_i32(params: &mut serde_json::Map<String, Value>, key: &str, value: Option<i32>) {
+    if let Some(value) = value {
+        params.insert(key.to_string(), serde_json::json!(value));
+    }
+}
+
+fn insert_optional_f64(params: &mut serde_json::Map<String, Value>, key: &str, value: Option<f64>) {
     if let Some(value) = value {
         params.insert(key.to_string(), serde_json::json!(value));
     }
@@ -488,6 +567,12 @@ fn main() -> anyhow::Result<()> {
                 params.insert("path".to_string(), Value::String(path.clone()));
                 ("workspace.report_pwd", Value::Object(params))
             }
+            WorkspaceCommands::ClearPwd { workspace, surface } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                ("workspace.clear_pwd", Value::Object(params))
+            }
             WorkspaceCommands::ReportShellState {
                 workspace,
                 surface,
@@ -500,6 +585,12 @@ fn main() -> anyhow::Result<()> {
                 params.insert("state".to_string(), Value::String(state.clone()));
                 insert_optional_string(&mut params, "label", label);
                 ("workspace.report_shell_state", Value::Object(params))
+            }
+            WorkspaceCommands::ClearShellState { workspace, surface } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                ("workspace.clear_shell_state", Value::Object(params))
             }
             WorkspaceCommands::ReportPorts {
                 workspace,
@@ -528,6 +619,12 @@ fn main() -> anyhow::Result<()> {
                 insert_optional_string(&mut params, "surface", surface);
                 params.insert("tty_name".to_string(), Value::String(tty_name.clone()));
                 ("workspace.report_tty", Value::Object(params))
+            }
+            WorkspaceCommands::ClearTty { workspace, surface } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                ("workspace.clear_tty", Value::Object(params))
             }
             WorkspaceCommands::ReportPr {
                 workspace,
@@ -606,6 +703,17 @@ fn main() -> anyhow::Result<()> {
                 insert_optional_string(&mut params, "format", format);
                 ("workspace.report_meta", Value::Object(params))
             }
+            WorkspaceCommands::ClearMeta {
+                workspace,
+                surface,
+                key,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                params.insert("key".to_string(), Value::String(key.clone()));
+                ("workspace.clear_meta", Value::Object(params))
+            }
             WorkspaceCommands::ReportMetaBlock {
                 workspace,
                 surface,
@@ -626,6 +734,17 @@ fn main() -> anyhow::Result<()> {
                 insert_optional_i32(&mut params, "priority", *priority);
                 insert_optional_string(&mut params, "format", format);
                 ("workspace.report_meta_block", Value::Object(params))
+            }
+            WorkspaceCommands::ClearMetaBlock {
+                workspace,
+                surface,
+                key,
+            } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "workspace", workspace);
+                insert_optional_string(&mut params, "surface", surface);
+                params.insert("key".to_string(), Value::String(key.clone()));
+                ("workspace.clear_meta_block", Value::Object(params))
             }
         },
 
@@ -650,6 +769,26 @@ fn main() -> anyhow::Result<()> {
                     "surface": surface,
                 }),
             ),
+            SurfaceCommands::Next { pane } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "pane", pane);
+                ("surface.next", Value::Object(params))
+            }
+            SurfaceCommands::Previous { pane } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "pane", pane);
+                ("surface.previous", Value::Object(params))
+            }
+            SurfaceCommands::MoveForward { surface } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "surface", surface);
+                ("surface.move_forward", Value::Object(params))
+            }
+            SurfaceCommands::MoveBackward { surface } => {
+                let mut params = json_object();
+                insert_optional_string(&mut params, "surface", surface);
+                ("surface.move_backward", Value::Object(params))
+            }
         },
 
         Commands::Pane(pane) => match pane {
@@ -657,6 +796,18 @@ fn main() -> anyhow::Result<()> {
                 ("pane.new", serde_json::json!({"orientation": orientation}))
             }
             PaneCommands::Focus { pane } => ("pane.focus", serde_json::json!({"pane": pane})),
+            PaneCommands::Close { pane } => ("pane.close", serde_json::json!({"pane": pane})),
+            PaneCommands::Resize {
+                pane,
+                direction,
+                step,
+            } => {
+                let mut params = json_object();
+                params.insert("pane".to_string(), Value::String(pane.clone()));
+                params.insert("direction".to_string(), Value::String(direction.clone()));
+                insert_optional_f64(&mut params, "step", *step);
+                ("pane.resize", Value::Object(params))
+            }
         },
 
         Commands::Notify {

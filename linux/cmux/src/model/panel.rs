@@ -280,6 +280,16 @@ impl LayoutNode {
     }
 
     /// Find a pane by pane ID.
+    pub fn find_pane(&self, pane_id: Uuid) -> Option<&Pane> {
+        match self {
+            LayoutNode::Pane { pane } => (pane.id == pane_id).then_some(pane),
+            LayoutNode::Split { first, second, .. } => first
+                .find_pane(pane_id)
+                .or_else(|| second.find_pane(pane_id)),
+        }
+    }
+
+    /// Find a pane by pane ID mutably.
     pub fn find_pane_mut(&mut self, pane_id: Uuid) -> Option<&mut Pane> {
         match self {
             LayoutNode::Pane { pane } => (pane.id == pane_id).then_some(pane),
@@ -447,6 +457,90 @@ impl LayoutNode {
         }
     }
 
+    /// Path from the root to the pane, if any.
+    pub fn path_to_pane(&self, pane_id: Uuid) -> Option<Vec<SplitPathStep>> {
+        match self {
+            LayoutNode::Pane { pane } => (pane.id == pane_id).then_some(Vec::new()),
+            LayoutNode::Split {
+                orientation,
+                first,
+                second,
+                ..
+            } => {
+                if let Some(mut path) = first.path_to_pane(pane_id) {
+                    path.insert(
+                        0,
+                        SplitPathStep {
+                            orientation: *orientation,
+                            branch: SplitBranch::First,
+                        },
+                    );
+                    Some(path)
+                } else if let Some(mut path) = second.path_to_pane(pane_id) {
+                    path.insert(
+                        0,
+                        SplitPathStep {
+                            orientation: *orientation,
+                            branch: SplitBranch::Second,
+                        },
+                    );
+                    Some(path)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    pub fn adjust_divider_for_pane(
+        &mut self,
+        pane_id: Uuid,
+        direction: FocusDirection,
+        step: f64,
+        min: f64,
+        max: f64,
+    ) -> bool {
+        match self {
+            LayoutNode::Pane { .. } => false,
+            LayoutNode::Split {
+                orientation,
+                divider_position,
+                first,
+                second,
+            } => {
+                let in_first = first.find_pane(pane_id).is_some();
+                let in_second = !in_first && second.find_pane(pane_id).is_some();
+                if !in_first && !in_second {
+                    return false;
+                }
+
+                let adjusted_child = if in_first {
+                    first.adjust_divider_for_pane(pane_id, direction, step, min, max)
+                } else {
+                    second.adjust_divider_for_pane(pane_id, direction, step, min, max)
+                };
+                if adjusted_child {
+                    return true;
+                }
+
+                let delta = match (orientation, direction) {
+                    (SplitOrientation::Horizontal, FocusDirection::Left) => -step,
+                    (SplitOrientation::Horizontal, FocusDirection::Right) => step,
+                    (SplitOrientation::Vertical, FocusDirection::Up) => -step,
+                    (SplitOrientation::Vertical, FocusDirection::Down) => step,
+                    _ => return false,
+                };
+
+                let next = (*divider_position + delta).clamp(min, max);
+                if (*divider_position - next).abs() < f64::EPSILON {
+                    return false;
+                }
+                *divider_position = next;
+                true
+            }
+        }
+    }
+
     pub fn pane_on_edge(&self, edge: EdgePreference) -> Option<Uuid> {
         match self {
             LayoutNode::Pane { pane } => Some(pane.id),
@@ -610,5 +704,58 @@ mod tests {
         }
 
         assert_eq!(selected, Some(id2));
+    }
+
+    #[test]
+    fn test_path_to_pane_returns_branch_steps() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let id3 = Uuid::new_v4();
+        let right_pane = Pane::single_panel(id3);
+        let right_pane_id = right_pane.id;
+        let node = LayoutNode::Split {
+            orientation: SplitOrientation::Horizontal,
+            divider_position: 0.5,
+            first: Box::new(LayoutNode::single_pane(id1).split(SplitOrientation::Vertical, id2)),
+            second: Box::new(LayoutNode::Pane { pane: right_pane }),
+        };
+
+        let path = node.path_to_pane(right_pane_id).unwrap();
+        assert_eq!(path.len(), 1);
+        assert_eq!(path[0].orientation, SplitOrientation::Horizontal);
+        assert_eq!(path[0].branch, SplitBranch::Second);
+    }
+
+    #[test]
+    fn test_adjust_divider_for_pane_uses_nearest_matching_ancestor() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let id3 = Uuid::new_v4();
+        let mut node = LayoutNode::Split {
+            orientation: SplitOrientation::Horizontal,
+            divider_position: 0.5,
+            first: Box::new(LayoutNode::single_pane(id1).split(SplitOrientation::Vertical, id2)),
+            second: Box::new(LayoutNode::single_pane(id3)),
+        };
+        let target_pane_id = node.find_pane_id_with_panel(id2).unwrap();
+
+        assert!(node.adjust_divider_for_pane(target_pane_id, FocusDirection::Down, 0.1, 0.1, 0.9));
+
+        match &node {
+            LayoutNode::Split {
+                divider_position,
+                first,
+                ..
+            } => {
+                assert_eq!(*divider_position, 0.5);
+                match first.as_ref() {
+                    LayoutNode::Split {
+                        divider_position, ..
+                    } => assert_eq!(*divider_position, 0.6),
+                    _ => panic!("expected nested split"),
+                }
+            }
+            _ => panic!("expected split"),
+        }
     }
 }

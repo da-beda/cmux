@@ -92,8 +92,12 @@ PERSISTED_WORKSPACE_ID="$(echo "$PERSISTED_JSON" | jq -r '.result.workspace_id')
 "$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace pin >/dev/null
 "$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace report-git-branch --branch persisted-main >/dev/null
 "$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace report-shell-state --state running --label "restore" >/dev/null
+"$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace report-tty --tty-name pts/42 >/dev/null
 "$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace report-pr --number 828 --url https://example.com/pr/828 --title "Persisted PR" >/dev/null
 "$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace report-meta --key task --label Task --value persisted >/dev/null
+"$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace report-meta-block --key notes --title Notes --content "persisted notes" >/dev/null
+"$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace clear-tty >/dev/null
+"$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace clear-meta-block --key notes >/dev/null
 "$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace new --title "Other" >/dev/null
 "$TARGET_DIR/cmux" --socket "$SOCKET_PATH" workspace select --workspace "$PERSISTED_WORKSPACE_ID" >/dev/null
 
@@ -156,4 +160,12 @@ echo "$POST_RESTART_JSON" | jq -e '
 echo "$POST_RESTART_JSON" | jq -e '
   .result.workspaces
   | map(select(.selected == true))[0].meta_items[0].key == "task"
+' >/dev/null
+echo "$POST_RESTART_JSON" | jq -e '
+  .result.workspaces
+  | map(select(.selected == true))[0].tty_name == null
+' >/dev/null
+echo "$POST_RESTART_JSON" | jq -e '
+  .result.workspaces
+  | map(select(.selected == true))[0].meta_blocks == []
 ' >/dev/null

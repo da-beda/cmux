@@ -459,4 +459,83 @@ mod tests {
 
         let _ = fs::remove_dir_all(temp_dir);
     }
+
+    #[test]
+    fn save_and_load_snapshot_preserves_cleared_metadata_as_absent() {
+        let mut manager = TabManager::new();
+        {
+            let workspace = manager.selected_mut().unwrap();
+            let fallback = workspace.focused_panel_id.unwrap();
+            let _ = workspace.set_panel_directory(fallback, "/tmp/fallback");
+            let panel_id = workspace.split(SplitOrientation::Vertical);
+            let _ = workspace.focus_panel(panel_id);
+            let _ = workspace.set_panel_directory(panel_id, "/tmp/active");
+            let _ = workspace.set_panel_shell_state(
+                panel_id,
+                ShellActivityState::Running,
+                Some("cargo"),
+            );
+            let _ = workspace.set_panel_tty(panel_id, "pts/7");
+            let _ = workspace.upsert_panel_metadata_item(
+                panel_id,
+                MetadataItem {
+                    key: "task".into(),
+                    label: "Task".into(),
+                    value: "review".into(),
+                    icon: None,
+                    color: None,
+                    url: None,
+                    priority: 2,
+                    format: MetadataFormat::Plain,
+                    timestamp: 1.0,
+                },
+            );
+            let _ = workspace.upsert_panel_metadata_block(
+                panel_id,
+                MetadataBlock {
+                    key: "notes".into(),
+                    title: Some("Notes".into()),
+                    content: "line one\nline two".into(),
+                    style: None,
+                    priority: 1,
+                    format: MetadataFormat::Markdown,
+                    timestamp: 2.0,
+                },
+            );
+            let _ = workspace.clear_panel_directory(panel_id);
+            let _ = workspace.clear_panel_shell_state(panel_id);
+            let _ = workspace.clear_panel_tty(panel_id);
+            let _ = workspace.clear_panel_metadata_item(panel_id, "task");
+            let _ = workspace.clear_panel_metadata_block(panel_id, "notes");
+            let _ = workspace.set_panel_git_branch(panel_id, "persisted-main", false);
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("cmux-persistence-clear-test-{unique}"));
+        let path = temp_dir.join("session-v1.json");
+
+        save_snapshot_to_path(&capture_snapshot(&manager), &path).unwrap();
+        let restored = load_tab_manager_from_path(&path)
+            .unwrap()
+            .expect("snapshot should restore a session");
+
+        let selected = restored.selected().unwrap();
+        assert_eq!(selected.current_directory, "/tmp/fallback");
+        assert!(selected.shell_state.is_none());
+        assert!(selected.tty_name.is_none());
+        assert!(selected.metadata_items.is_empty());
+        assert!(selected.metadata_blocks.is_empty());
+        assert_eq!(
+            selected
+                .git_branch
+                .as_ref()
+                .map(|branch| branch.branch.as_str()),
+            Some("persisted-main")
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
 }

@@ -84,6 +84,18 @@ pub struct Progress {
     pub label: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetadataClearResult {
+    pub removed: bool,
+    pub summary_changed: bool,
+}
+
+impl MetadataClearResult {
+    pub fn changed(self) -> bool {
+        self.removed || self.summary_changed
+    }
+}
+
 /// Truncate a string to at most `max_bytes` bytes without splitting UTF-8.
 pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
@@ -393,6 +405,19 @@ impl Workspace {
         changed || metadata_changed
     }
 
+    pub fn clear_panel_directory(&mut self, panel_id: Uuid) -> Option<MetadataClearResult> {
+        let Some(panel) = self.panels.get_mut(&panel_id) else {
+            return None;
+        };
+        let removed = panel.directory.take().is_some();
+        let _ = panel.directory_updated_at.take();
+        let summary_changed = self.recompute_workspace_metadata();
+        Some(MetadataClearResult {
+            removed,
+            summary_changed,
+        })
+    }
+
     pub fn set_panel_git_branch(&mut self, panel_id: Uuid, branch: &str, is_dirty: bool) -> bool {
         let now = now_timestamp();
         let branch = truncate_str(branch, 256).to_string();
@@ -441,6 +466,19 @@ impl Workspace {
         self.recompute_workspace_metadata() || changed
     }
 
+    pub fn clear_panel_shell_state(&mut self, panel_id: Uuid) -> Option<MetadataClearResult> {
+        let Some(panel) = self.panels.get_mut(&panel_id) else {
+            return None;
+        };
+        let removed = panel.shell_state.take().is_some();
+        let _ = panel.shell_state_updated_at.take();
+        let summary_changed = self.recompute_workspace_metadata();
+        Some(MetadataClearResult {
+            removed,
+            summary_changed,
+        })
+    }
+
     pub fn set_panel_ports(&mut self, panel_id: Uuid, ports: Vec<u16>) -> bool {
         let Some(panel) = self.panels.get_mut(&panel_id) else {
             return false;
@@ -476,6 +514,19 @@ impl Workspace {
             panel.tty_name_updated_at = Some(now_timestamp());
         }
         self.recompute_workspace_metadata() || changed
+    }
+
+    pub fn clear_panel_tty(&mut self, panel_id: Uuid) -> Option<MetadataClearResult> {
+        let Some(panel) = self.panels.get_mut(&panel_id) else {
+            return None;
+        };
+        let removed = panel.tty_name.take().is_some();
+        let _ = panel.tty_name_updated_at.take();
+        let summary_changed = self.recompute_workspace_metadata();
+        Some(MetadataClearResult {
+            removed,
+            summary_changed,
+        })
     }
 
     pub fn set_panel_pr_metadata(&mut self, panel_id: Uuid, metadata: PullRequestMetadata) -> bool {
@@ -571,6 +622,27 @@ impl Workspace {
         self.recompute_workspace_metadata() || changed
     }
 
+    pub fn clear_panel_metadata_item(
+        &mut self,
+        panel_id: Uuid,
+        key: &str,
+    ) -> Option<MetadataClearResult> {
+        let Some(panel) = self.panels.get_mut(&panel_id) else {
+            return None;
+        };
+        let original_len = panel.metadata_items.len();
+        panel.metadata_items.retain(|item| item.key != key);
+        let removed = panel.metadata_items.len() != original_len;
+        if removed {
+            sort_metadata_items(&mut panel.metadata_items);
+        }
+        let summary_changed = self.recompute_workspace_metadata();
+        Some(MetadataClearResult {
+            removed,
+            summary_changed,
+        })
+    }
+
     pub fn upsert_panel_metadata_block(&mut self, panel_id: Uuid, block: MetadataBlock) -> bool {
         let Some(panel) = self.panels.get_mut(&panel_id) else {
             return false;
@@ -594,6 +666,27 @@ impl Workspace {
             sort_metadata_blocks(&mut panel.metadata_blocks);
         }
         self.recompute_workspace_metadata() || changed
+    }
+
+    pub fn clear_panel_metadata_block(
+        &mut self,
+        panel_id: Uuid,
+        key: &str,
+    ) -> Option<MetadataClearResult> {
+        let Some(panel) = self.panels.get_mut(&panel_id) else {
+            return None;
+        };
+        let original_len = panel.metadata_blocks.len();
+        panel.metadata_blocks.retain(|block| block.key != key);
+        let removed = panel.metadata_blocks.len() != original_len;
+        if removed {
+            sort_metadata_blocks(&mut panel.metadata_blocks);
+        }
+        let summary_changed = self.recompute_workspace_metadata();
+        Some(MetadataClearResult {
+            removed,
+            summary_changed,
+        })
     }
 
     /// Focus a specific panel and reveal its tab.
@@ -637,6 +730,138 @@ impl Workspace {
 
     pub fn close_surface(&mut self, panel_id: Uuid) -> bool {
         self.remove_panel(panel_id)
+    }
+
+    pub fn close_pane(&mut self, pane_id: Uuid) -> Option<Vec<Uuid>> {
+        let pane = self.layout.find_pane(pane_id)?.clone();
+        if pane.panel_ids.is_empty() {
+            return None;
+        }
+
+        let removed_panel_ids = if self.layout.all_pane_ids().len() == 1 {
+            if pane.panel_ids.len() > 1 {
+                let keep_panel_id = pane
+                    .selected_panel_id
+                    .or(self.focused_panel_id)
+                    .filter(|panel_id| pane.panel_ids.contains(panel_id))
+                    .unwrap_or(pane.panel_ids[0]);
+                let removed = pane
+                    .panel_ids
+                    .iter()
+                    .copied()
+                    .filter(|panel_id| *panel_id != keep_panel_id)
+                    .collect::<Vec<_>>();
+                for panel_id in &removed {
+                    self.panels.remove(panel_id);
+                }
+                self.layout = LayoutNode::single_pane(keep_panel_id);
+                self.focused_panel_id = Some(keep_panel_id);
+                self.focused_pane_id = self.layout.find_pane_id_with_panel(keep_panel_id);
+                self.recompute_workspace_metadata();
+                return Some(removed);
+            }
+
+            let removed = pane.panel_ids.clone();
+            for panel_id in &removed {
+                self.panels.remove(panel_id);
+            }
+            let mut replacement = Panel::new();
+            replacement.directory = Some(self.current_directory.clone());
+            let replacement_id = replacement.id;
+            self.panels.insert(replacement_id, replacement);
+            self.layout = LayoutNode::single_pane(replacement_id);
+            self.focused_panel_id = Some(replacement_id);
+            self.focused_pane_id = self.layout.find_pane_id_with_panel(replacement_id);
+            self.recompute_workspace_metadata();
+            return Some(removed);
+        } else {
+            pane.panel_ids.clone()
+        };
+
+        let focus_removed = self.focused_pane_id == Some(pane_id)
+            || self
+                .focused_panel_id
+                .is_some_and(|panel_id| removed_panel_ids.contains(&panel_id));
+        let fallback_pane_id = focus_removed
+            .then(|| self.sibling_pane_after_close(pane_id))
+            .flatten();
+
+        for panel_id in &removed_panel_ids {
+            self.panels.remove(panel_id);
+            let _ = self.layout.remove_panel(*panel_id);
+        }
+
+        if focus_removed
+            || self
+                .focused_panel_id
+                .is_none_or(|panel_id| !self.panels.contains_key(&panel_id))
+        {
+            self.focused_pane_id = fallback_pane_id
+                .filter(|pane_id| self.layout.find_pane(*pane_id).is_some())
+                .or_else(|| self.layout.all_pane_ids().into_iter().next());
+            self.focused_panel_id = self
+                .focused_pane_id
+                .and_then(|pane_id| self.layout.selected_panel_for_pane(pane_id))
+                .or_else(|| self.layout.all_panel_ids().into_iter().next());
+        } else {
+            self.focused_pane_id = self
+                .focused_panel_id
+                .and_then(|panel_id| self.layout.find_pane_id_with_panel(panel_id))
+                .or_else(|| self.layout.all_pane_ids().into_iter().next());
+        }
+
+        self.recompute_workspace_metadata();
+        Some(removed_panel_ids)
+    }
+
+    fn sibling_pane_after_close(&self, pane_id: Uuid) -> Option<Uuid> {
+        let path = self.layout.path_to_pane(pane_id)?;
+        let step = path.last()?;
+        let mut node = &self.layout;
+        for ancestor in &path[..path.len().saturating_sub(1)] {
+            node = match (node, ancestor.branch) {
+                (LayoutNode::Split { first, .. }, SplitBranch::First) => first,
+                (LayoutNode::Split { second, .. }, SplitBranch::Second) => second,
+                _ => return None,
+            };
+        }
+
+        let (sibling, edge) = match (node, step.branch, step.orientation) {
+            (
+                LayoutNode::Split { second, .. },
+                SplitBranch::First,
+                SplitOrientation::Horizontal,
+            ) => (second.as_ref(), super::panel::EdgePreference::Left),
+            (LayoutNode::Split { second, .. }, SplitBranch::First, SplitOrientation::Vertical) => {
+                (second.as_ref(), super::panel::EdgePreference::Top)
+            }
+            (
+                LayoutNode::Split { first, .. },
+                SplitBranch::Second,
+                SplitOrientation::Horizontal,
+            ) => (first.as_ref(), super::panel::EdgePreference::Right),
+            (LayoutNode::Split { first, .. }, SplitBranch::Second, SplitOrientation::Vertical) => {
+                (first.as_ref(), super::panel::EdgePreference::Bottom)
+            }
+            _ => return None,
+        };
+
+        sibling.pane_on_edge(edge)
+    }
+
+    pub fn resize_pane(&mut self, pane_id: Uuid, direction: FocusDirection, step: f64) -> bool {
+        if self.layout.find_pane(pane_id).is_none() {
+            return false;
+        }
+        self.layout
+            .adjust_divider_for_pane(pane_id, direction, step, 0.1, 0.9)
+    }
+
+    pub fn resize_focused_pane(&mut self, direction: FocusDirection, step: f64) -> bool {
+        let Some(pane_id) = self.focused_pane_id else {
+            return false;
+        };
+        self.resize_pane(pane_id, direction, step)
     }
 
     pub fn move_focus(&mut self, direction: FocusDirection) -> Option<Uuid> {
@@ -700,7 +925,11 @@ impl Workspace {
 
     pub fn focus_next_surface(&mut self) -> Option<Uuid> {
         let focused_pane_id = self.focused_pane_id?;
-        let pane = self.layout.find_pane_mut(focused_pane_id)?;
+        self.focus_next_surface_in_pane(focused_pane_id)
+    }
+
+    pub fn focus_next_surface_in_pane(&mut self, pane_id: Uuid) -> Option<Uuid> {
+        let pane = self.layout.find_pane_mut(pane_id)?;
         if pane.panel_ids.is_empty() {
             return None;
         }
@@ -711,6 +940,7 @@ impl Workspace {
         let next = (current + 1) % pane.panel_ids.len();
         let panel_id = pane.panel_ids[next];
         pane.selected_panel_id = Some(panel_id);
+        self.focused_pane_id = Some(pane_id);
         self.focused_panel_id = Some(panel_id);
         self.recompute_workspace_metadata();
         Some(panel_id)
@@ -718,7 +948,11 @@ impl Workspace {
 
     pub fn focus_previous_surface(&mut self) -> Option<Uuid> {
         let focused_pane_id = self.focused_pane_id?;
-        let pane = self.layout.find_pane_mut(focused_pane_id)?;
+        self.focus_previous_surface_in_pane(focused_pane_id)
+    }
+
+    pub fn focus_previous_surface_in_pane(&mut self, pane_id: Uuid) -> Option<Uuid> {
+        let pane = self.layout.find_pane_mut(pane_id)?;
         if pane.panel_ids.is_empty() {
             return None;
         }
@@ -733,9 +967,40 @@ impl Workspace {
         };
         let panel_id = pane.panel_ids[next];
         pane.selected_panel_id = Some(panel_id);
+        self.focused_pane_id = Some(pane_id);
         self.focused_panel_id = Some(panel_id);
         self.recompute_workspace_metadata();
         Some(panel_id)
+    }
+
+    pub fn move_surface_forward(&mut self, panel_id: Uuid) -> Option<Uuid> {
+        self.move_surface(panel_id, 1)
+    }
+
+    pub fn move_surface_backward(&mut self, panel_id: Uuid) -> Option<Uuid> {
+        self.move_surface(panel_id, -1)
+    }
+
+    fn move_surface(&mut self, panel_id: Uuid, delta: isize) -> Option<Uuid> {
+        let pane_id = self.layout.find_pane_id_with_panel(panel_id)?;
+        let pane = self.layout.find_pane_mut(pane_id)?;
+        let index = pane.panel_ids.iter().position(|id| *id == panel_id)?;
+        let next = if delta.is_negative() {
+            index.checked_sub(delta.unsigned_abs())?
+        } else {
+            index.saturating_add(delta as usize)
+        };
+        if next >= pane.panel_ids.len() || next == index {
+            return None;
+        }
+        pane.panel_ids.swap(index, next);
+        if pane.selected_panel_id == Some(panel_id) {
+            pane.selected_panel_id = Some(panel_id);
+        }
+        if self.focused_panel_id == Some(panel_id) {
+            self.focused_pane_id = Some(pane_id);
+        }
+        Some(pane_id)
     }
 
     pub fn rename(&mut self, title: Option<&str>) -> bool {
@@ -1125,6 +1390,84 @@ mod tests {
     }
 
     #[test]
+    fn test_close_pane_collapses_split_and_focuses_sibling() {
+        let mut ws = Workspace::new();
+        let left = ws.focused_panel_id.unwrap();
+        let right = ws.split(SplitOrientation::Horizontal);
+        let right_pane_id = ws.layout.find_pane_id_with_panel(right).unwrap();
+
+        let removed = ws.close_pane(right_pane_id).unwrap();
+        assert_eq!(removed, vec![right]);
+        assert_eq!(ws.focused_panel_id, Some(left));
+        assert_eq!(ws.panels.len(), 1);
+        assert_eq!(ws.layout.all_panel_ids(), vec![left]);
+    }
+
+    #[test]
+    fn test_close_last_pane_replaces_single_surface_with_fresh_terminal() {
+        let mut ws = Workspace::new();
+        let original = ws.focused_panel_id.unwrap();
+        let pane_id = ws.focused_pane_id.unwrap();
+
+        let removed = ws.close_pane(pane_id).unwrap();
+        let replacement = ws.focused_panel_id.unwrap();
+
+        assert_eq!(removed, vec![original]);
+        assert_ne!(replacement, original);
+        assert_eq!(ws.panels.len(), 1);
+        assert_eq!(ws.layout.all_panel_ids(), vec![replacement]);
+    }
+
+    #[test]
+    fn test_resize_pane_updates_matching_split() {
+        let mut ws = Workspace::new();
+        let left = ws.focused_panel_id.unwrap();
+        let right = ws.split(SplitOrientation::Horizontal);
+        let right_pane_id = ws.layout.find_pane_id_with_panel(right).unwrap();
+
+        assert!(ws.resize_pane(right_pane_id, FocusDirection::Right, 0.1));
+
+        match &ws.layout {
+            LayoutNode::Split {
+                divider_position, ..
+            } => assert_eq!(*divider_position, 0.6),
+            _ => panic!("expected split"),
+        }
+
+        assert!(ws.focus_panel(left));
+        let left_pane_id = ws.layout.find_pane_id_with_panel(left).unwrap();
+        assert!(!ws.resize_pane(left_pane_id, FocusDirection::Up, 0.1));
+    }
+
+    #[test]
+    fn test_move_surface_forward_and_backward_reorders_tabs_in_pane() {
+        let mut ws = Workspace::new();
+        let first = ws.focused_panel_id.unwrap();
+        let second = Panel::new();
+        let second_id = second.id;
+        let third = Panel::new();
+        let third_id = third.id;
+        ws.panels.insert(second_id, second);
+        ws.panels.insert(third_id, third);
+
+        let pane_id = ws.focused_pane_id.unwrap();
+        let pane = ws.layout.find_pane_mut(pane_id).unwrap();
+        pane.panel_ids.extend([second_id, third_id]);
+        pane.selected_panel_id = Some(second_id);
+        ws.focused_panel_id = Some(second_id);
+
+        assert_eq!(ws.move_surface_forward(second_id), Some(pane_id));
+        let pane = ws.layout.find_pane(pane_id).unwrap();
+        assert_eq!(pane.panel_ids, vec![first, third_id, second_id]);
+        assert_eq!(pane.selected_panel_id, Some(second_id));
+
+        assert_eq!(ws.move_surface_backward(second_id), Some(pane_id));
+        let pane = ws.layout.find_pane(pane_id).unwrap();
+        assert_eq!(pane.panel_ids, vec![first, second_id, third_id]);
+        assert_eq!(pane.selected_panel_id, Some(second_id));
+    }
+
+    #[test]
     fn test_rename_clears_empty_custom_title() {
         let mut ws = Workspace::new();
         assert!(ws.rename(Some("Build")));
@@ -1298,6 +1641,146 @@ mod tests {
 
         assert!(ws.clear_panel_ports(first));
         assert_eq!(ws.listening_ports, vec![3000, 3001]);
+    }
+
+    #[test]
+    fn test_clear_panel_directory_falls_back_to_other_panel_then_home() {
+        let mut ws = Workspace::new();
+        let first = ws.focused_panel_id.unwrap();
+        let second = ws.split(SplitOrientation::Horizontal);
+
+        assert!(ws.set_panel_directory(first, "/tmp/one"));
+        assert!(ws.set_panel_directory(second, "/tmp/two"));
+        assert_eq!(ws.current_directory, "/tmp/two");
+
+        assert!(ws.clear_panel_directory(second).unwrap().removed);
+        assert_eq!(ws.current_directory, "/tmp/one");
+
+        assert!(ws.clear_panel_directory(first).unwrap().removed);
+        assert_eq!(
+            ws.current_directory,
+            std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
+        );
+    }
+
+    #[test]
+    fn test_clear_panel_shell_state_and_tty_fall_back_to_other_panel() {
+        let mut ws = Workspace::new();
+        let first = ws.focused_panel_id.unwrap();
+        let second = ws.split(SplitOrientation::Horizontal);
+
+        assert!(ws.set_panel_shell_state(first, ShellActivityState::Prompt, None));
+        assert!(ws.set_panel_shell_state(second, ShellActivityState::Running, Some("cargo test"),));
+        assert!(ws.set_panel_tty(first, "pts/1"));
+        assert!(ws.set_panel_tty(second, "pts/2"));
+
+        assert!(ws.clear_panel_shell_state(second).unwrap().removed);
+        assert_eq!(
+            ws.shell_state.as_ref().map(|state| &state.state),
+            Some(&ShellActivityState::Prompt)
+        );
+        assert!(ws.clear_panel_tty(second).unwrap().removed);
+        assert_eq!(ws.tty_name.as_deref(), Some("pts/1"));
+
+        assert!(ws.clear_panel_shell_state(first).unwrap().removed);
+        assert!(ws.shell_state.is_none());
+        assert!(ws.clear_panel_tty(first).unwrap().removed);
+        assert!(ws.tty_name.is_none());
+    }
+
+    #[test]
+    fn test_clear_metadata_item_and_block_remove_only_matching_key() {
+        let mut ws = Workspace::new();
+        let panel_id = ws.focused_panel_id.unwrap();
+
+        assert!(ws.upsert_panel_metadata_item(
+            panel_id,
+            MetadataItem {
+                key: "task".into(),
+                label: "Task".into(),
+                value: "review".into(),
+                icon: None,
+                color: None,
+                url: None,
+                priority: 5,
+                format: crate::model::panel::MetadataFormat::Plain,
+                timestamp: 1.0,
+            }
+        ));
+        assert!(ws.upsert_panel_metadata_item(
+            panel_id,
+            MetadataItem {
+                key: "branch".into(),
+                label: "Branch".into(),
+                value: "main".into(),
+                icon: None,
+                color: None,
+                url: None,
+                priority: 1,
+                format: crate::model::panel::MetadataFormat::Plain,
+                timestamp: 2.0,
+            }
+        ));
+        assert!(ws.upsert_panel_metadata_block(
+            panel_id,
+            MetadataBlock {
+                key: "notes".into(),
+                title: Some("Notes".into()),
+                content: "line one".into(),
+                style: None,
+                priority: 1,
+                format: crate::model::panel::MetadataFormat::Markdown,
+                timestamp: 1.0,
+            }
+        ));
+        assert!(ws.upsert_panel_metadata_block(
+            panel_id,
+            MetadataBlock {
+                key: "summary".into(),
+                title: Some("Summary".into()),
+                content: "keep me".into(),
+                style: None,
+                priority: 0,
+                format: crate::model::panel::MetadataFormat::Plain,
+                timestamp: 2.0,
+            }
+        ));
+
+        assert!(
+            ws.clear_panel_metadata_item(panel_id, "task")
+                .unwrap()
+                .removed
+        );
+        assert_eq!(
+            ws.metadata_items
+                .iter()
+                .map(|item| item.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["branch"]
+        );
+        assert!(
+            !ws.clear_panel_metadata_item(panel_id, "missing")
+                .unwrap()
+                .removed
+        );
+
+        assert!(
+            ws.clear_panel_metadata_block(panel_id, "notes")
+                .unwrap()
+                .removed
+        );
+        assert_eq!(
+            ws.metadata_blocks
+                .iter()
+                .map(|block| block.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["summary"]
+        );
+        assert!(
+            !ws.clear_panel_metadata_block(panel_id, "missing")
+                .unwrap()
+                .removed
+        );
     }
 
     #[test]

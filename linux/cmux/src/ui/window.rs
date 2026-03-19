@@ -420,6 +420,79 @@ fn close_selected_surface(
     closed
 }
 
+fn close_selected_pane(
+    state: &Rc<AppState>,
+    list_box: &gtk4::ListBox,
+    content_box: &gtk4::Box,
+) -> bool {
+    let closed = {
+        let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+        let Some(workspace) = tab_manager.selected_mut() else {
+            return false;
+        };
+        let Some(pane_id) = workspace.focused_pane_id else {
+            return false;
+        };
+        workspace.close_pane(pane_id).is_some()
+    };
+    if closed {
+        state.shared.schedule_persist_session();
+        refresh_ui(list_box, content_box, state);
+        focus_selected_surface(state);
+    }
+    closed
+}
+
+fn resize_selected_pane(
+    state: &Rc<AppState>,
+    direction: FocusDirection,
+    list_box: &gtk4::ListBox,
+    content_box: &gtk4::Box,
+) -> bool {
+    let resized = {
+        let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+        let Some(workspace) = tab_manager.selected_mut() else {
+            return false;
+        };
+        workspace.resize_focused_pane(direction, 0.05)
+    };
+    if resized {
+        state.shared.schedule_persist_session();
+        refresh_ui(list_box, content_box, state);
+        focus_selected_surface(state);
+    }
+    resized
+}
+
+fn move_selected_surface(
+    state: &Rc<AppState>,
+    forward: bool,
+    list_box: &gtk4::ListBox,
+    content_box: &gtk4::Box,
+) -> bool {
+    let moved = {
+        let mut tab_manager = lock_or_recover(&state.shared.tab_manager);
+        let Some(workspace) = tab_manager.selected_mut() else {
+            return false;
+        };
+        let Some(panel_id) = workspace.focused_surface_id() else {
+            return false;
+        };
+        if forward {
+            workspace.move_surface_forward(panel_id)
+        } else {
+            workspace.move_surface_backward(panel_id)
+        }
+        .is_some()
+    };
+    if moved {
+        state.shared.schedule_persist_session();
+        refresh_ui(list_box, content_box, state);
+        focus_selected_surface(state);
+    }
+    moved
+}
+
 fn mark_workspace_read(state: &Rc<AppState>, workspace_id: uuid::Uuid) {
     lock_or_recover(&state.shared.notifications).mark_workspace_read(workspace_id);
 
@@ -457,6 +530,10 @@ fn setup_shortcuts(
             }
             (gdk4::Key::W, true, true, false) => {
                 close_selected_surface(&state, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::X, true, true, false) => {
+                close_selected_pane(&state, &list_box, &content_box);
                 glib::Propagation::Stop
             }
             (gdk4::Key::D, true, true, false) => {
@@ -524,12 +601,37 @@ fn setup_shortcuts(
                 let _ = focus_direction(&state, FocusDirection::Down, &list_box, &content_box);
                 glib::Propagation::Stop
             }
+            (gdk4::Key::Left, true, true, true) => {
+                let _ = resize_selected_pane(&state, FocusDirection::Left, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::Right, true, true, true) => {
+                let _ =
+                    resize_selected_pane(&state, FocusDirection::Right, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::Up, true, true, true) => {
+                let _ = resize_selected_pane(&state, FocusDirection::Up, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::Down, true, true, true) => {
+                let _ = resize_selected_pane(&state, FocusDirection::Down, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
             (gdk4::Key::bracketright, true, true, false) => {
                 let _ = cycle_surface(&state, true, &list_box, &content_box);
                 glib::Propagation::Stop
             }
             (gdk4::Key::bracketleft, true, true, false) => {
                 let _ = cycle_surface(&state, false, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::bracketright, true, true, true) => {
+                let _ = move_selected_surface(&state, true, &list_box, &content_box);
+                glib::Propagation::Stop
+            }
+            (gdk4::Key::bracketleft, true, true, true) => {
+                let _ = move_selected_surface(&state, false, &list_box, &content_box);
                 glib::Propagation::Stop
             }
             (gdk4::Key::period, true, true, false) => {
