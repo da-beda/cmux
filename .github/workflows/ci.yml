@@ -8,7 +8,7 @@ on:
 
 jobs:
   workflow-guard-tests:
-    runs-on: ubuntu-latest
+    runs-on: grok
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -35,7 +35,7 @@ jobs:
         run: ./tests/test_ci_ghosttykit_checksum_present.sh
 
   remote-daemon-tests:
-    runs-on: ubuntu-latest
+    runs-on: grok
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -53,7 +53,7 @@ jobs:
         run: ./tests/test_remote_daemon_release_assets.sh
 
   web-typecheck:
-    runs-on: ubuntu-latest
+    runs-on: grok
     defaults:
       run:
         working-directory: web

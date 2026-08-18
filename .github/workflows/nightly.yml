@@ -27,7 +27,7 @@ env:
 
 jobs:
   decide:
-    runs-on: ubuntu-latest
+    runs-on: grok
     outputs:
       should_build: ${{ steps.decide.outputs.should_build }}
       head_sha: ${{ steps.decide.outputs.head_sha }}

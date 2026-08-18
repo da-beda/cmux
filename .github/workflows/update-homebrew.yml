@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   update-cask:
-    runs-on: ubuntu-latest
+    runs-on: grok
     # Only run if the release workflow succeeded (or manual trigger)
     if: >-
       github.event_name == 'workflow_dispatch' ||
